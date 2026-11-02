@@ -178,12 +178,12 @@ async function ensurePrice(sub, spec) {
   if (!exact) {
     console.warn(`WARN: exact ${spec.price} UAH point not found; using ${nearest.attributes?.customerPrice} UAH`);
   }
-  const start = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000);
-  const startDate = start.toISOString().slice(0, 10);
+  // The first price is the starting price: Apple rejects a future startDate
+  // until a starting price exists. Future price changes may include startDate.
   await request('POST', '/subscriptionPrices', {
     data: {
       type: 'subscriptionPrices',
-      attributes: { startDate },
+      attributes: {},
       relationships: {
         subscription: { data: { type: 'subscriptions', id: sub.id } },
         subscriptionPricePoint: { data: { type: 'subscriptionPricePoints', id: nearest.id } },
