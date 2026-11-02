@@ -123,6 +123,12 @@ async function ensureGroupLocalization(group) {
   }
   if (!version) return { skipped: true };
 
+  try {
+    const versionDetails = await request('GET', `/subscriptionGroupVersions/${version.id}`);
+    console.log(`GROUP_VERSION ${JSON.stringify(versionDetails.data?.attributes || {})}`);
+  } catch (error) {
+    console.warn(`GROUP_VERSION_STATE_FAILED ${error.message}`);
+  }
   const localizations = await listAll(`/subscriptionGroupVersions/${version.id}/localizations?limit=200`);
   if (localizations.some((row) => ['uk', 'uk-UA'].includes(row.attributes?.locale))) {
     return { skipped: true, versionId: version.id };
@@ -337,6 +343,7 @@ async function uploadScreenshot(sub, label) {
 
 async function verify(sub, spec) {
   const fresh = await request('GET', `/subscriptions/${sub.id}`);
+  console.log(`SUBSCRIPTION_ATTRIBUTES ${spec.productId} ${JSON.stringify(fresh.data?.attributes || {})}`);
   const localizations = await listAll(`/subscriptions/${sub.id}/subscriptionLocalizations?limit=200`);
   const prices = await listAll(`/subscriptions/${sub.id}/prices?limit=200`);
   return {
@@ -372,6 +379,14 @@ try {
   const app = await findApp();
   report.appId = app.id;
   console.log(`App: ${app.id} ${BUNDLE}`);
+  try {
+    const availability = await request('GET', `/apps/${app.id}/appAvailabilityV2`);
+    report.appAvailability = availability.data;
+    console.log('APP_AVAILABILITY ' + JSON.stringify(availability.data));
+  } catch (error) {
+    report.appAvailabilityError = error.message;
+    console.error('APP_AVAILABILITY_FAILED ' + error.message);
+  }
 
   const { group, created } = await findOrCreateGroup(app.id);
   report.groupId = group.id;
