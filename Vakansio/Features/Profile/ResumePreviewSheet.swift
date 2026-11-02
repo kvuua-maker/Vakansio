@@ -35,9 +35,7 @@ struct ResumePreviewSheet: View {
             UserAvatar(
                 base64: app.resume.photoBase64,
                 size: 92,
-                initials: app.userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "VK"
-                    : app.userName.vkInitials
+                initials: ""
             )
 
             VStack(spacing: 4) {

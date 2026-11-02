@@ -25,11 +25,6 @@ struct ProfileView: View {
         var id: String { rawValue }
     }
 
-    private var avatarInitials: String {
-        let name = app.userName.vkTrimmed
-        return name.isEmpty ? "VK" : name.vkInitials
-    }
-
     private var companyName: String {
         let name = app.userName.vkTrimmed
         return name.isEmpty ? "Моя компанія" : name
@@ -126,7 +121,7 @@ struct ProfileView: View {
                         UserAvatar(
                             base64: app.resume.photoBase64,
                             size: 64,
-                            initials: avatarInitials
+                            initials: ""
                         )
 
                         ZStack {
