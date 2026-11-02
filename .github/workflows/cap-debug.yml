@@ -66,7 +66,7 @@ jobs:
           curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities" | tee "$RUNNER_TEMP/caps-before.json"
           echo
           echo "=== current capabilities (with settings) ==="
-          curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities?fields%5BbundleIdCapabilities%5D=capabilityType,settings&limit=200" | tee "$RUNNER_TEMP/caps-settings.json"
+          curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities?fields%5BbundleIdCapabilities%5D=capabilityType,settings" | tee "$RUNNER_TEMP/caps-settings.json"
           echo
 
           echo "=== POST APPLE_ID_AUTH minimal ==="
@@ -76,7 +76,7 @@ jobs:
           cat "$RUNNER_TEMP/apple-resp.json"; echo
 
           echo "=== POST APPLE_ID_AUTH with primary consent ==="
-          printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH","settings":[{"key":"PRIMARY_APP_CONSENT","options":[{"key":"PRIMARY_APP_CONSENT","enabled":true}]}]},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-req2.json"
+          printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH","settings":[{"key":"APPLE_ID_AUTH_APP_CONSENT","options":[{"key":"PRIMARY_APP_CONSENT","enabled":true}]}]},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-req2.json"
           CODE=$(curl -s -o "$RUNNER_TEMP/apple-resp2.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $ASC_TOKEN" -H 'Content-Type: application/json' --data @"$RUNNER_TEMP/apple-req2.json" "$API/bundleIdCapabilities")
           echo "HTTP $CODE"
           cat "$RUNNER_TEMP/apple-resp2.json"; echo
@@ -84,7 +84,7 @@ jobs:
           for i in 1 2 3 4 5 6; do
             sleep 5
             echo "=== attempt $i ==="
-            curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities?limit=200" | tee "$RUNNER_TEMP/caps-after.json"
+            curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities" | tee "$RUNNER_TEMP/caps-after.json"
             echo
             HAS=$(node -e '
               const fs=require("fs");
