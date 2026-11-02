@@ -93,6 +93,37 @@ async function findApp() {
   return app;
 }
 
+async function ensureAppAvailability(appId) {
+  let existing = null;
+  try {
+    existing = await request('GET', `/apps/${appId}/appAvailabilityV2`);
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  if (existing?.data?.id) {
+    return { skipped: true, id: existing.data.id };
+  }
+
+  const territories = await listAll('/territories?limit=200');
+  if (!territories.length) throw new Error('Apple territory catalog is empty');
+  const included = territories.map((territory) => ({
+    type: 'territoryAvailabilities',
+    attributes: { available: true },
+    relationships: {
+      territory: { data: { type: 'territories', id: territory.id } },
+    },
+  }));
+  const created = await request('POST', 'https://api.appstoreconnect.apple.com/v2/appAvailabilities', {
+    data: {
+      type: 'appAvailabilities',
+      attributes: { availableInNewTerritories: true },
+      relationships: { app: { data: { type: 'apps', id: appId } } },
+    },
+    included,
+  });
+  return { skipped: false, id: created.data?.id, territories: territories.length };
+}
+
 async function findOrCreateGroup(appId) {
   const groups = await listAll(`/apps/${appId}/subscriptionGroups?limit=200`);
   let group = groups.find((item) => item.attributes?.referenceName === GROUP_NAME);
@@ -380,9 +411,8 @@ try {
   report.appId = app.id;
   console.log(`App: ${app.id} ${BUNDLE}`);
   try {
-    const availability = await request('GET', `/apps/${app.id}/appAvailabilityV2`);
-    report.appAvailability = availability.data;
-    console.log('APP_AVAILABILITY ' + JSON.stringify(availability.data));
+    report.appAvailability = await ensureAppAvailability(app.id);
+    console.log('APP_AVAILABILITY ' + JSON.stringify(report.appAvailability));
   } catch (error) {
     report.appAvailabilityError = error.message;
     console.error('APP_AVAILABILITY_FAILED ' + error.message);
