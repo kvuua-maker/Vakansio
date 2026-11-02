@@ -194,15 +194,23 @@ async function auditPrices(appId) {
   for (const group of groups) {
     const subscriptions = await listAll(`/subscriptionGroups/${group.id}/subscriptions?limit=200`);
     for (const sub of subscriptions) {
-      const prices = await listAll(`/subscriptions/${sub.id}/prices?include=subscriptionPricePoint&limit=200`);
+      const page = await request('GET', `/subscriptions/${sub.id}/prices?include=subscriptionPricePoint&limit=200`);
+      const included = page.included || [];
+      const pointById = new Map(included.filter((item) => item.type === 'subscriptionPricePoints').map((item) => [item.id, item]));
       result.push({
         group: group.attributes?.referenceName,
         productId: sub.attributes?.productId,
         state: sub.attributes?.state,
-        prices: prices.map((price) => ({
-          id: price.id,
-          pricePoint: price.relationships?.subscriptionPricePoint?.data?.id || null,
-        })),
+        prices: (page.data || []).map((price) => {
+          const pointId = price.relationships?.subscriptionPricePoint?.data?.id || null;
+          const point = pointId ? pointById.get(pointId) : null;
+          return {
+            id: price.id,
+            pricePoint: pointId,
+            customerPrice: point?.attributes?.customerPrice ?? null,
+            proceeds: point?.attributes?.proceeds ?? null,
+          };
+        }),
       });
     }
   }
