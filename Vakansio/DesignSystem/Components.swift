@@ -373,14 +373,16 @@ struct SearchField: View {
     var onSubmit: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(VK.textTertiary)
+                .padding(.top, 3)
 
-            TextField(placeholder, text: $text)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .font(.system(size: 16))
                 .foregroundStyle(VK.textPrimary)
+                .lineLimit(1...2)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .focused(focus)
@@ -396,10 +398,12 @@ struct SearchField: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Очистити")
+                .padding(.top, 2)
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 48)
+        .padding(.vertical, 12)
+        .frame(minHeight: 48, alignment: .top)
         .background(VK.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)

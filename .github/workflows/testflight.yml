@@ -33,14 +33,9 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
-          VAKANSIO_INTERNAL_TOKEN: ${{ secrets.VAKANSIO_INTERNAL_TOKEN }}
         run: |
           set -euo pipefail
           MISSING=0
-          if [ -z "${VAKANSIO_INTERNAL_TOKEN:-}" ]; then
-            echo "::error::VAKANSIO_INTERNAL_TOKEN is not set on this repository"
-            MISSING=1
-          fi
           if [ -z "${ASC_KEY_ID:-}" ]; then
             echo "::error::ASC_KEY_ID is not set on this repository"
             MISSING=1
@@ -60,17 +55,11 @@ jobs:
           echo "Secrets present: key id ${#ASC_KEY_ID} chars, issuer ${#ASC_ISSUER_ID} chars, private key ${#ASC_PRIVATE_KEY} chars"
 
       - name: Check API connectivity from the runner
-        env:
-          VAKANSIO_INTERNAL_TOKEN: ${{ secrets.VAKANSIO_INTERNAL_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsS --max-time 15 http://178.105.32.46:8090/health
-          CODE=$(curl -s -o "$RUNNER_TEMP/jobs.json" -w '%{http_code}' --max-time 15 \
-            -H "x-internal-token: $VAKANSIO_INTERNAL_TOKEN" \
-            http://178.105.32.46:8090/v1/jobs)
-          echo "GET /v1/jobs -> HTTP $CODE"
-          test "$CODE" = "200"
-          node -e 'const d=require(process.env.RUNNER_TEMP+"/jobs.json"); if(!Array.isArray(d)||d.length<1){process.exit(1)} console.log("API jobs from public IP:", d.length)'
+          curl -fsS --max-time 20 https://178.105.32.46:8443/health -o "$RUNNER_TEMP/health.json"
+          cat "$RUNNER_TEMP/health.json"
+          node -e 'const d=require(process.env.RUNNER_TEMP+"/health.json"); if(!d.ok||Number(d.jobs)<40){console.error("API health/jobs check failed");process.exit(1)} console.log("API HTTPS jobs:", d.jobs)'
 
       - name: Select the newest Xcode
         run: |
@@ -266,6 +255,25 @@ jobs:
             fi
           fi
 
+          curl -s -o "$RUNNER_TEMP/caps.json" -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities"
+          HAS_APPLE=$(node -e '
+            const fs=require("fs");
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/caps.json","utf8"));
+            const caps=(d.data||[]).map(c=>c.attributes.capabilityType);
+            process.stdout.write(caps.includes("APPLE_ID_AUTH")?"yes":"no");
+          ')
+          echo "APPLE_ID_AUTH enabled: $HAS_APPLE"
+          if [ "$HAS_APPLE" = "no" ]; then
+            printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH"},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-cap-req.json"
+            CODE=$(curl -s -o "$RUNNER_TEMP/apple-cap-resp.json" -w '%{http_code}' -X POST               -H "Authorization: Bearer $ASC_TOKEN" -H 'Content-Type: application/json'               --data @"$RUNNER_TEMP/apple-cap-req.json" "$API/bundleIdCapabilities")
+            echo "enable APPLE_ID_AUTH -> HTTP $CODE"
+            if [ "$CODE" != "201" ] && [ "$CODE" != "409" ]; then
+              cat "$RUNNER_TEMP/apple-cap-resp.json"
+              echo "::error::Could not enable Sign in with Apple capability"
+              exit 1
+            fi
+          fi
+
       - name: Recreate the App Store profile with this run's certificate
         run: |
           set -euo pipefail
@@ -328,21 +336,13 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate project and stamp version
-        env:
-          VAKANSIO_INTERNAL_TOKEN: ${{ secrets.VAKANSIO_INTERNAL_TOKEN }}
         run: |
           set -euo pipefail
           xcodegen generate
-          if [ -z "${VAKANSIO_INTERNAL_TOKEN:-}" ]; then
-            echo "::error::VAKANSIO_INTERNAL_TOKEN secret is missing"
-            exit 1
-          fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" Vakansio/Support/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :VakansioInternalToken $VAKANSIO_INTERNAL_TOKEN" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Vakansio/Support/Info.plist
-          echo "API token injected (${#VAKANSIO_INTERNAL_TOKEN} chars)"
 
       - name: Archive (unsigned)
         run: |
@@ -368,11 +368,11 @@ jobs:
           BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST")
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
           BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
-          TOKEN=$(/usr/libexec/PlistBuddy -c "Print :VakansioInternalToken" "$PLIST")
           API_URL=$(/usr/libexec/PlistBuddy -c "Print :VakansioAPIBaseURL" "$PLIST")
-          echo "bundle=$BUNDLE version=$VERSION build=$BUILD api=$API_URL token_length=${#TOKEN}"
+          echo "bundle=$BUNDLE version=$VERSION build=$BUILD api=$API_URL"
           test "$BUNDLE" = "$APP_BUNDLE" || { echo "::error::Unexpected bundle id $BUNDLE"; exit 1; }
           test -n "$BUILD" || { echo "::error::Empty CFBundleVersion"; exit 1; }
+          case "$API_URL" in https://*) ;; *) echo "::error::API URL must use HTTPS"; exit 1 ;; esac
           test "${#TOKEN}" -ge 32 || { echo "::error::VakansioInternalToken is missing from the bundle"; exit 1; }
 
       - name: Sign app and package IPA
@@ -405,6 +405,11 @@ jobs:
             exit 1
           fi
           echo "aps-environment entitlement: present"
+          if ! grep -q "com.apple.developer.applesignin" "$RUNNER_TEMP/app-entitlements.plist"; then
+            echo "::error::Sign in with Apple entitlement is missing — Apple auth will not work"
+            exit 1
+          fi
+          echo "Sign in with Apple entitlement: present"
           codesign --verify --verbose "$APP"
 
           mkdir -p "$RUNNER_TEMP/export/Payload"

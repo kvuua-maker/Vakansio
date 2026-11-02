@@ -39,11 +39,12 @@ enum StoreKitServiceError: LocalizedError {
 
 @MainActor
 final class StoreKitService: ObservableObject {
-    static let isEnabled = false
+    static let isEnabled = true
 
     @Published private(set) var products: [Product] = []
     @Published private(set) var purchasedTier: SubscriptionTier = .start
     @Published private(set) var isLoading = false
+    @Published private(set) var latestJWS: String?
     @Published var errorMessage: String?
 
     private var updatesTask: Task<Void, Never>?
@@ -81,6 +82,7 @@ final class StoreKitService: ObservableObject {
             switch result {
             case .success(let verification):
                 let transaction = try checkVerified(verification)
+                latestJWS = verification.jwsRepresentation
                 await transaction.finish()
                 await refreshEntitlements()
 
@@ -130,6 +132,7 @@ final class StoreKitService: ObservableObject {
         for await result in Transaction.updates {
             do {
                 let transaction = try checkVerified(result)
+                latestJWS = result.jwsRepresentation
                 await transaction.finish()
                 await refreshEntitlements()
             } catch {

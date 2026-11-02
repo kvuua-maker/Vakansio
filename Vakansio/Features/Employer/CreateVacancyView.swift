@@ -72,7 +72,7 @@ struct CreateVacancyView: View {
                 finish()
             }
         } message: {
-            Text("Статус: \((createdJob?.status ?? .pending).title). Вакансія з'явиться у стрічці після перевірки — зазвичай до однієї хвилини.")
+            Text("Статус: \((createdJob?.status ?? .pending).title). AI перевіряє вакансію на шахрайство та нецензурну лексику. Після схвалення вона з'явиться у стрічці.")
         }
     }
 

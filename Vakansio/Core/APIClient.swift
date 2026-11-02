@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Configuration
 
 enum APIConfig {
-    static let fallbackBaseURL = "http://178.105.32.46:8090"
+    static let fallbackBaseURL = "https://178.105.32.46:8443"
 
     static var baseURLString: String {
         if let value = Bundle.main.object(forInfoDictionaryKey: "VakansioAPIBaseURL") as? String {
@@ -13,12 +13,6 @@ enum APIConfig {
         return fallbackBaseURL
     }
 
-    static var internalToken: String {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "VakansioInternalToken") as? String else {
-            return ""
-        }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 // MARK: - Errors
@@ -38,7 +32,7 @@ enum APIError: LocalizedError {
         case .invalidResponse:
             return "Сервер повернув некоректну відповідь"
         case .unauthorized:
-            return "Немає доступу до API. Перевірте внутрішній токен."
+            return "Сесія недійсна. Увійдіть через Apple."
         case .notFound:
             return "Дані не знайдено"
         case .server(let message):
@@ -71,6 +65,68 @@ struct APIClient {
     func fetchJobs() async throws -> [Vacancy] {
         let dtos: [JobDTO] = try await get(path: "/v1/jobs")
         return dtos.map { $0.toModel() }
+    }
+
+    func authenticateWithApple(identityToken: String, fullName: String?) async throws -> AuthSession {
+        let dto: AuthResponseDTO = try await postPublic(
+            path: "/v1/auth/apple",
+            body: AppleAuthRequest(identityToken: identityToken, fullName: fullName)
+        )
+        guard let token = dto.token, !token.isEmpty, let profile = dto.user else {
+            throw APIError.server("Сервер не повернув сесію")
+        }
+        return AuthSession(token: token, user: profile.toModel())
+    }
+
+    func searchJobs(
+        query: String,
+        city: String?,
+        category: String?,
+        minSalary: Int,
+        remote: Bool,
+        office: Bool,
+        page: Int,
+        limit: Int = 20
+    ) async throws -> JobSearchResponse {
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let city, !city.isEmpty { items.append(URLQueryItem(name: "city", value: city)) }
+        if let category, !category.isEmpty { items.append(URLQueryItem(name: "category", value: category)) }
+        if minSalary > 0 { items.append(URLQueryItem(name: "minSalary", value: String(minSalary))) }
+        if remote { items.append(URLQueryItem(name: "remote", value: "1")) }
+        if office { items.append(URLQueryItem(name: "office", value: "1")) }
+
+        let dto: JobSearchResponseDTO = try await get(path: "/v1/jobs/search", query: items)
+        return dto.toModel()
+    }
+
+    func verifySubscription(jws: String) async throws -> SubscriptionVerificationResult {
+        let dto: SubscriptionVerifyDTO = try await post(
+            path: "/v1/subscription/verify",
+            body: SubscriptionVerifyRequest(jws: jws)
+        )
+        guard let tier = SubscriptionTier(serverValue: dto.tier ?? "") else {
+            throw APIError.server("Невідомий тариф")
+        }
+        return SubscriptionVerificationResult(tier: tier, expiresAt: dto.expiresAt ?? "")
+    }
+
+    func moderateJob(jobId: String, action: String) async throws -> Vacancy {
+        let dto: JobDTO = try await post(
+            path: "/v1/admin/jobs/\(jobId)/moderate",
+            body: AdminActionRequest(action: action)
+        )
+        return dto.toModel()
+    }
+
+    func moderateVerification(requestId: String, action: String) async throws {
+        let _: OKResponse = try await post(
+            path: "/v1/admin/verifications/\(requestId)",
+            body: AdminActionRequest(action: action)
+        )
     }
 
     func fetchRecommendedJobs(userId: String) async throws -> [Vacancy] {
@@ -221,13 +277,12 @@ struct APIClient {
         path: String,
         method: String,
         query: [URLQueryItem],
-        body: Data?
+        body: Data?,
+        authenticated: Bool = true
     ) throws -> URLRequest {
-        let token = APIConfig.internalToken
-        guard !token.isEmpty else {
-            throw APIError.missingConfiguration(
-                "Не налаштовано внутрішній токен API (VakansioInternalToken)."
-            )
+        let token = SessionStore.shared.token
+        if authenticated && (token == nil || token?.isEmpty == true) {
+            throw APIError.unauthorized
         }
 
         guard var components = URLComponents(string: APIConfig.baseURLString) else {
@@ -243,9 +298,12 @@ struct APIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 25
-        request.setValue(token, forHTTPHeaderField: "x-internal-token")
+        request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         if let body {
             request.httpBody = body
@@ -263,6 +321,12 @@ struct APIClient {
     private func post<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
         let data = try encoder.encode(body)
         let request = try makeRequest(path: path, method: "POST", query: [], body: data)
+        return try await execute(request)
+    }
+
+    private func postPublic<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
+        let data = try encoder.encode(body)
+        let request = try makeRequest(path: path, method: "POST", query: [], body: data, authenticated: false)
         return try await execute(request)
     }
 
@@ -341,6 +405,7 @@ struct UpdateProfileRequest: Encodable {
     let skills: String
     let city: String
     let resumeText: String
+    let adminSecret: String?
 }
 
 private struct StatusUpdateRequest: Encodable {
@@ -482,6 +547,9 @@ struct ProfileDTO: Decodable {
     let companyEdrpou: String?
     let companyVerified: Bool?
     let verificationStatus: String?
+    let appleLinked: Bool?
+    let subscriptionTier: String?
+    let subscriptionExpiresAt: String?
 
     func toModel() -> UserProfile {
         UserProfile(
@@ -497,7 +565,10 @@ struct ProfileDTO: Decodable {
             isAdmin: isAdmin ?? false,
             companyEdrpou: companyEdrpou ?? "",
             companyVerified: companyVerified ?? false,
-            verificationStatus: verificationStatus ?? ""
+            verificationStatus: verificationStatus ?? "",
+            appleLinked: appleLinked ?? false,
+            subscriptionTier: subscriptionTier ?? "starter",
+            subscriptionExpiresAt: subscriptionExpiresAt ?? ""
         )
     }
 }
@@ -638,13 +709,15 @@ struct AdminCountsDTO: Decodable {
     let jobs: Int?
     let applications: Int?
     let pendingVerifications: Int?
+    let pendingJobs: Int?
 
     func toModel() -> AdminCounts {
         AdminCounts(
             users: users ?? 0,
             jobs: jobs ?? 0,
             applications: applications ?? 0,
-            pendingVerifications: pendingVerifications ?? 0
+            pendingVerifications: pendingVerifications ?? 0,
+            pendingJobs: pendingJobs ?? 0
         )
     }
 }
@@ -681,16 +754,117 @@ struct AdminPendingDTO: Decodable {
     }
 }
 
+struct AdminPendingJobDTO: Decodable {
+    let id: String
+    let title: String?
+    let companyName: String?
+    let city: String?
+    let category: String?
+    let status: String?
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case companyName = "company_name"
+        case city
+        case category
+        case status
+        case createdAt = "created_at"
+    }
+
+    func toModel() -> AdminPendingJob {
+        AdminPendingJob(
+            id: id,
+            title: title ?? "",
+            companyName: companyName ?? "",
+            city: city ?? "",
+            category: category ?? "",
+            status: status ?? "",
+            createdAt: APIDateParser.date(from: createdAt) ?? Date()
+        )
+    }
+}
+
 struct AdminOverviewDTO: Decodable {
     let usage: AdminUsageDTO?
     let counts: AdminCountsDTO?
     let pending: [AdminPendingDTO]?
+    let pendingJobs: [AdminPendingJobDTO]?
 
     func toModel() -> AdminOverview {
         AdminOverview(
             usage: usage?.toModel() ?? AdminUsage(month: "", freeUsed: 0, freeLimit: 25, paidBalance: 0),
             counts: counts?.toModel() ?? AdminCounts(users: 0, jobs: 0, applications: 0, pendingVerifications: 0),
-            pending: (pending ?? []).map { $0.toModel() }
+            pending: (pending ?? []).map { $0.toModel() },
+            pendingJobs: (pendingJobs ?? []).map { $0.toModel() }
         )
     }
+}
+
+
+// MARK: - Apple auth / search / subscription DTOs
+
+struct AuthSession {
+    let token: String
+    let user: UserProfile
+}
+
+private struct AppleAuthRequest: Encodable {
+    let identityToken: String
+    let fullName: String?
+}
+
+private struct AuthResponseDTO: Decodable {
+    let token: String?
+    let user: ProfileDTO?
+}
+
+struct JobSearchParsedDTO: Decodable {
+    let position: String?
+    let city: String?
+    let experience: String?
+    let keywords: [String]?
+
+    func toModel() -> JobSearchParsed {
+        JobSearchParsed(
+            position: position ?? "",
+            city: city ?? "",
+            experience: experience ?? "",
+            keywords: keywords ?? []
+        )
+    }
+}
+
+struct JobSearchResponseDTO: Decodable {
+    let items: [JobDTO]?
+    let page: Int?
+    let limit: Int?
+    let total: Int?
+    let hasMore: Bool?
+    let parsed: JobSearchParsedDTO?
+
+    func toModel() -> JobSearchResponse {
+        JobSearchResponse(
+            items: (items ?? []).map { $0.toModel() },
+            page: page ?? 1,
+            limit: limit ?? 20,
+            total: total ?? (items ?? []).count,
+            hasMore: hasMore ?? false,
+            parsed: parsed?.toModel()
+        )
+    }
+}
+
+private struct SubscriptionVerifyRequest: Encodable {
+    let jws: String
+}
+
+struct SubscriptionVerifyDTO: Decodable {
+    let tier: String?
+    let expiresAt: String?
+}
+
+private struct AdminActionRequest: Encodable {
+    let action: String
 }

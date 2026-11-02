@@ -34,6 +34,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kvuua.vakansio
         PRODUCT_NAME: Vakansio
         INFOPLIST_FILE: Vakansio/Support/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Vakansio/Support/Vakansio.entitlements
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -41,7 +42,6 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
-        VAKANSIO_INTERNAL_TOKEN: ""
 
 schemes:
   Vakansio:

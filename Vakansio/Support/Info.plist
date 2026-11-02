@@ -26,11 +26,6 @@
 	<string>public.app-category.business</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Фото профілю використовується у вашому резюме та відгуках.</string>
 	<key>UIApplicationSceneManifest</key>
@@ -56,8 +51,6 @@
 	<key>UIUserInterfaceStyle</key>
 	<string>Automatic</string>
 	<key>VakansioAPIBaseURL</key>
-	<string>http://178.105.32.46:8090</string>
-	<key>VakansioInternalToken</key>
-	<string>$(VAKANSIO_INTERNAL_TOKEN)</string>
+	<string>https://178.105.32.46:8443</string>
 </dict>
 </plist>

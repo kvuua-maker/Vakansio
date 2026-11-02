@@ -14,6 +14,16 @@ struct SearchView: View {
     @State private var remoteOnly = false
     @State private var officeOnly = false
     @State private var showFilters = false
+    @State private var results: [Vacancy] = []
+    @State private var isSearching = false
+    @State private var searchError: String?
+    @State private var page = 1
+    @State private var total = 0
+    @State private var hasMore = false
+    @State private var parsedQuery: JobSearchParsed?
+    @State private var searchTask: Task<Void, Never>?
+    @State private var searchGeneration = 0
+    @State private var filterDebounce: Task<Void, Never>?
     @FocusState private var isSearchFocused: Bool
 
     private var activeFilterCount: Int {
@@ -35,38 +45,6 @@ struct SearchView: View {
         minSalary <= 0 ? "Будь-яка" : "від \(vkFormatMoney(Int(minSalary))) ₴"
     }
 
-    private var results: [Vacancy] {
-        let text = debouncedQuery.vkTrimmed.lowercased()
-
-        return app.jobs.filter { vacancy in
-            let matchesQuery = text.isEmpty
-                || vacancy.title.lowercased().contains(text)
-                || vacancy.company.name.lowercased().contains(text)
-                || vacancy.city.lowercased().contains(text)
-                || vacancy.category.lowercased().contains(text)
-
-            let matchesCity = selectedCity == nil
-                || vacancy.city == selectedCity
-                || (selectedCity == "Віддалено" && vacancy.isRemote)
-
-            let matchesCategory = selectedCategory == nil || vacancy.category == selectedCategory
-            let matchesSalary = minSalary <= 0 || Double(vacancy.salaryMax) >= minSalary
-
-            let matchesFormat: Bool
-            if remoteOnly && officeOnly {
-                matchesFormat = true
-            } else if remoteOnly {
-                matchesFormat = vacancy.isRemote
-            } else if officeOnly {
-                matchesFormat = !vacancy.isRemote
-            } else {
-                matchesFormat = true
-            }
-
-            return matchesQuery && matchesCity && matchesCategory && matchesSalary && matchesFormat
-        }
-    }
-
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
@@ -76,6 +54,7 @@ struct SearchView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         header
                         searchRow
+                        searchHint
                         filterStrip
                         if !app.jobs.isEmpty {
                             salaryCard
@@ -112,6 +91,9 @@ struct SearchView: View {
             if app.jobs.isEmpty {
                 await app.loadRecommendedJobs()
             }
+            if !isSearching && results.isEmpty {
+                performSearch(reset: true)
+            }
         }
         .onChange(of: query) { _, newValue in
             debounceTask?.cancel()
@@ -119,8 +101,14 @@ struct SearchView: View {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard !Task.isCancelled else { return }
                 debouncedQuery = newValue
+                performSearch(reset: true)
             }
         }
+        .onChange(of: selectedCity) { _, _ in scheduleFilterSearch() }
+        .onChange(of: selectedCategory) { _, _ in scheduleFilterSearch() }
+        .onChange(of: remoteOnly) { _, _ in scheduleFilterSearch() }
+        .onChange(of: officeOnly) { _, _ in scheduleFilterSearch() }
+        .onChange(of: minSalary) { _, _ in scheduleFilterSearch() }
         .onChange(of: maxSalary) { _, newValue in
             if minSalary > newValue {
                 minSalary = newValue
@@ -144,10 +132,11 @@ struct SearchView: View {
     }
 
     private var searchRow: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             SearchField(text: $query, focus: $isSearchFocused) {
                 isSearchFocused = false
                 debouncedQuery = query
+                performSearch(reset: true)
             }
 
             Button {
@@ -301,6 +290,7 @@ struct SearchView: View {
                         remoteOnly = false
                         officeOnly = false
                     }
+                    scheduleFilterSearch()
                 } label: {
                     Text("Скинути")
                         .font(.system(size: 12, weight: .semibold))
@@ -315,20 +305,20 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.isLoadingJobs && app.jobs.isEmpty {
+        if isSearching && results.isEmpty {
             VStack(spacing: 12) {
                 ForEach(0..<3, id: \.self) { _ in
                     SkeletonVacancyCard()
                 }
             }
-        } else if app.jobs.isEmpty {
+        } else if let searchError, results.isEmpty {
             EmptyStateView(
                 icon: "wifi.exclamationmark",
-                title: "Немає даних",
-                message: app.lastErrorMessage ?? "Вакансії ще не завантажені.",
+                title: "Не вдалося знайти",
+                message: searchError,
                 actionTitle: "Спробувати ще",
                 action: {
-                    Task { await app.loadRecommendedJobs() }
+                    performSearch(reset: true)
                 }
             )
             .vkCard()
@@ -340,28 +330,31 @@ struct SearchView: View {
 
                 Spacer()
 
-                Text("\(results.count) вакансій")
+                Text("\(total) вакансій")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(VK.textSecondary)
             }
             .padding(.top, 2)
 
+            if let parsedQuery, !parsedQuery.position.isEmpty || !parsedQuery.city.isEmpty || !parsedQuery.experience.isEmpty {
+                parsedChip(parsedQuery)
+            }
+
+            if let searchError, !results.isEmpty {
+                Text(searchError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(VK.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if results.isEmpty {
                 EmptyStateView(
                     icon: "text.magnifyingglass",
                     title: "Нічого не знайдено",
-                    message: "Спробуйте змінити запит або скинути фільтри.",
+                    message: "Спробуйте іншу фразу або скиньте фільтри.",
                     actionTitle: "Скинути фільтри",
                     action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            query = ""
-                            debouncedQuery = ""
-                            selectedCity = nil
-                            selectedCategory = nil
-                            minSalary = 0
-                            remoteOnly = false
-                            officeOnly = false
-                        }
+                        resetSearch()
                     }
                 )
                 .vkCard()
@@ -375,10 +368,170 @@ struct SearchView: View {
                             onToggleSave: { app.toggleSaved(vacancy) }
                         )
                     }
+
+                    if hasMore {
+                        Button {
+                            performSearch(reset: false)
+                        } label: {
+                            HStack(spacing: 7) {
+                                if isSearching {
+                                    ProgressView().tint(VK.brand)
+                                } else {
+                                    Image(systemName: "arrow.down.circle.fill")
+                                }
+                                Text(isSearching ? "Завантажуємо…" : "Показати ще")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundStyle(VK.brand)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(VK.brand.opacity(0.08), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSearching)
+                    }
                 }
             }
         }
     }
+
+    private var searchHint: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("💡 Пишіть цілою фразою — AI розбере посаду, місто та досвід")
+                .font(.system(size: 11))
+                .foregroundStyle(VK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    exampleChip("Водій з авто")
+                    exampleChip("Продавець")
+                    exampleChip("Медсестра у Дніпрі")
+                }
+            }
+        }
+    }
+
+    private func exampleChip(_ value: String) -> some View {
+        Button {
+            query = value
+            debouncedQuery = value
+            isSearchFocused = false
+            performSearch(reset: true)
+        } label: {
+            Text(value)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(VK.brand)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(VK.brand.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func parsedChip(_ parsed: JobSearchParsed) -> some View {
+        var parts: [String] = []
+        if !parsed.position.isEmpty { parts.append(parsed.position) }
+        if !parsed.city.isEmpty { parts.append(parsed.city) }
+        if !parsed.experience.isEmpty { parts.append(parsed.experience) }
+        if !parsed.keywords.isEmpty { parts.append(parsed.keywords.prefix(3).joined(separator: ", ")) }
+
+        return HStack(spacing: 7) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(VK.brand)
+
+            Text("AI зрозумів: \(parts.joined(separator: " · "))")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(VK.textSecondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(VK.brand.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func performSearch(reset: Bool) {
+        searchGeneration += 1
+        let generation = searchGeneration
+        searchTask?.cancel()
+
+        if reset {
+            isSearching = true
+            searchError = nil
+        }
+
+        let requestPage = reset ? 1 : page + 1
+        let requestQuery = debouncedQuery
+        let requestCity = selectedCity
+        let requestCategory = selectedCategory
+        let requestSalary = Int(minSalary)
+        let requestRemote = remoteOnly
+        let requestOffice = officeOnly
+
+        searchTask = Task { @MainActor in
+            do {
+                let response = try await app.searchJobs(
+                    query: requestQuery,
+                    city: requestCity,
+                    category: requestCategory,
+                    minSalary: requestSalary,
+                    remote: requestRemote,
+                    office: requestOffice,
+                    page: requestPage
+                )
+                guard generation == searchGeneration else { return }
+
+                if reset {
+                    results = response.items
+                    page = 1
+                } else {
+                    results.append(contentsOf: response.items)
+                    page = response.page
+                }
+                total = response.total
+                hasMore = response.hasMore
+                parsedQuery = response.parsed
+                searchError = nil
+            } catch {
+                guard generation == searchGeneration else { return }
+                searchError = error.localizedDescription
+                if reset {
+                    results = []
+                    total = 0
+                    hasMore = false
+                    parsedQuery = nil
+                }
+            }
+
+            if generation == searchGeneration {
+                isSearching = false
+            }
+        }
+    }
+
+    private func scheduleFilterSearch() {
+        filterDebounce?.cancel()
+        filterDebounce = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            performSearch(reset: true)
+        }
+    }
+
+    private func resetSearch() {
+        query = ""
+        debouncedQuery = ""
+        selectedCity = nil
+        selectedCategory = nil
+        minSalary = 0
+        remoteOnly = false
+        officeOnly = false
+        performSearch(reset: true)
+    }
+
 }
 
 // MARK: - Filters

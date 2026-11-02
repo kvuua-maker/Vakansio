@@ -18,7 +18,7 @@ struct AppleSignInResult {
 }
 
 final class AppleSignInService: NSObject, ObservableObject {
-    static let isEnabled = false
+    static let isEnabled = true
 
     @Published private(set) var isAuthorizing = false
     @Published private(set) var result: AppleSignInResult?

@@ -70,7 +70,9 @@ struct Company: Identifiable, Hashable {
 
 enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
     case pending
+    case pendingManualReview = "pending_manual_review"
     case active
+    case rejected
     case closed
 
     var id: String { rawValue }
@@ -78,7 +80,9 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
     var title: String {
         switch self {
         case .pending: return "На модерації"
+        case .pendingManualReview: return "Ручна перевірка"
         case .active: return "Активна"
+        case .rejected: return "Відхилена"
         case .closed: return "Закрита"
         }
     }
@@ -86,7 +90,9 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
     var icon: String {
         switch self {
         case .pending: return "clock.fill"
+        case .pendingManualReview: return "person.crop.circle.badge.questionmark"
         case .active: return "checkmark.circle.fill"
+        case .rejected: return "xmark.octagon.fill"
         case .closed: return "xmark.circle.fill"
         }
     }
@@ -94,7 +100,9 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
     var tint: Color {
         switch self {
         case .pending: return VK.warning
+        case .pendingManualReview: return VK.danger
         case .active: return VK.success
+        case .rejected: return VK.danger
         case .closed: return VK.textSecondary
         }
     }
@@ -312,6 +320,9 @@ struct UserProfile: Hashable {
     var companyEdrpou: String = ""
     var companyVerified: Bool = false
     var verificationStatus: String = ""
+    var appleLinked: Bool = false
+    var subscriptionTier: String = "starter"
+    var subscriptionExpiresAt: String = ""
 }
 
 struct ResumeProfile: Hashable {
@@ -414,7 +425,24 @@ enum SubscriptionTier: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .start: return 3
         case .pro: return 10
-        case .business: return 100
+        case .business: return 9999
+        }
+    }
+
+    init?(serverValue: String) {
+        switch serverValue.lowercased() {
+        case "starter", "start": self = .start
+        case "pro": self = .pro
+        case "business": self = .business
+        default: return nil
+        }
+    }
+
+    var serverValue: String {
+        switch self {
+        case .start: return "starter"
+        case .pro: return "pro"
+        case .business: return "business"
         }
     }
 
@@ -587,6 +615,7 @@ struct AdminCounts: Hashable {
     var jobs: Int
     var applications: Int
     var pendingVerifications: Int
+    var pendingJobs: Int = 0
 }
 
 struct AdminPendingVerification: Identifiable, Hashable {
@@ -599,8 +628,40 @@ struct AdminPendingVerification: Identifiable, Hashable {
     var createdAt: Date
 }
 
+struct AdminPendingJob: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var companyName: String
+    var city: String
+    var category: String
+    var status: String
+    var createdAt: Date
+}
+
 struct AdminOverview: Hashable {
     var usage: AdminUsage
     var counts: AdminCounts
     var pending: [AdminPendingVerification]
+    var pendingJobs: [AdminPendingJob] = []
+}
+
+struct JobSearchParsed: Hashable {
+    var position: String
+    var city: String
+    var experience: String
+    var keywords: [String]
+}
+
+struct JobSearchResponse: Hashable {
+    var items: [Vacancy]
+    var page: Int
+    var limit: Int
+    var total: Int
+    var hasMore: Bool
+    var parsed: JobSearchParsed?
+}
+
+struct SubscriptionVerificationResult: Hashable {
+    var tier: SubscriptionTier
+    var expiresAt: String
 }

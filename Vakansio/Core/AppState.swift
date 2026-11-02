@@ -14,6 +14,7 @@ final class AppState: ObservableObject {
     // Account
     @Published var isSignedIn: Bool = false
     @Published var isAuthLoading: Bool = false
+    @Published var isRestoringSession: Bool = false
     @Published var isDeletingAccount: Bool = false
     @Published var userName: String = ""
     @Published var userEmail: String = ""
@@ -21,6 +22,7 @@ final class AppState: ObservableObject {
     @Published var companyEdrpou: String = ""
     @Published var companyVerified: Bool = false
     @Published var companyVerificationStatus: String = ""
+    @Published var subscriptionExpiresAt: String = ""
 
     // Server content
     @Published var jobs: [Vacancy] = []
@@ -51,7 +53,7 @@ final class AppState: ObservableObject {
     // Transient UI
     @Published var toast: ToastMessage?
 
-    let userId: String
+    @Published private(set) var userId: String = ""
 
     private let api = APIClient.shared
     private let defaults = UserDefaults.standard
@@ -81,13 +83,7 @@ final class AppState: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
 
-        if let stored = defaults.string(forKey: Keys.userId), !stored.isEmpty {
-            userId = stored
-        } else {
-            let generated = UUID().uuidString
-            defaults.set(generated, forKey: Keys.userId)
-            userId = generated
-        }
+        userId = defaults.string(forKey: Keys.userId) ?? ""
 
         hasCompletedOnboarding = defaults.bool(forKey: Keys.onboarded)
 
@@ -95,7 +91,7 @@ final class AppState: ObservableObject {
             role = UserRole(rawValue: raw)
         }
 
-        isSignedIn = defaults.bool(forKey: Keys.signedIn)
+        isSignedIn = defaults.bool(forKey: Keys.signedIn) && SessionStore.shared.token != nil
         userName = defaults.string(forKey: Keys.userName) ?? ""
         userEmail = defaults.string(forKey: Keys.userEmail) ?? ""
 
@@ -123,8 +119,31 @@ final class AppState: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
 
-        await loadProfile()
-        await loadMyApplications()
+        guard SessionStore.shared.token != nil else {
+            isSignedIn = false
+            defaults.set(false, forKey: Keys.signedIn)
+            return
+        }
+
+        isRestoringSession = true
+        defer { isRestoringSession = false }
+
+        do {
+            guard let profile = try await api.fetchProfile(userId: userId) else {
+                throw APIError.unauthorized
+            }
+            apply(profile)
+            isSignedIn = true
+            defaults.set(true, forKey: Keys.signedIn)
+            await loadMyApplications()
+            if role == .employer {
+                await loadEmployerData()
+            }
+        } catch {
+            SessionStore.shared.clear()
+            isSignedIn = false
+            defaults.set(false, forKey: Keys.signedIn)
+        }
     }
 
     func completeOnboarding(role: UserRole) {
@@ -134,6 +153,7 @@ final class AppState: ObservableObject {
         defaults.set(role.rawValue, forKey: Keys.role)
 
         Task {
+            guard isSignedIn else { return }
             await loadProfile()
             await loadMyApplications()
             if role == .employer {
@@ -154,10 +174,11 @@ final class AppState: ObservableObject {
         )
 
         Task {
+            guard isSignedIn else { return }
             if role == .employer {
                 await loadEmployerData()
             } else {
-                await loadJobs()
+                await loadRecommendedJobs()
                 await loadMyApplications()
             }
         }
@@ -459,28 +480,81 @@ final class AppState: ObservableObject {
 
     // MARK: - Auth and profile
 
-    func signInWithApple() async {
+    func authenticateWithApple(identityToken: String, fullName: String?) async {
         guard !isAuthLoading else { return }
+        guard !identityToken.isEmpty else {
+            showToast("Apple не повернув identityToken", icon: "exclamationmark.triangle.fill", style: .error)
+            return
+        }
+
         isAuthLoading = true
         defer { isAuthLoading = false }
 
-        if userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            userName = "Олена Ковальчук"
-        }
-        if userEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            userEmail = "olena.k@gmail.com"
-        }
+        do {
+            let session = try await api.authenticateWithApple(
+                identityToken: identityToken,
+                fullName: fullName
+            )
 
-        isSignedIn = true
-        defaults.set(true, forKey: Keys.signedIn)
-        defaults.set(userName, forKey: Keys.userName)
-        defaults.set(userEmail, forKey: Keys.userEmail)
+            SessionStore.shared.save(session.token)
+            resetLocalUserData()
 
-        let saved = await saveProfile()
-        if saved {
+            userId = session.user.id
+            defaults.set(userId, forKey: Keys.userId)
+            apply(session.user)
+
+            isSignedIn = true
+            defaults.set(true, forKey: Keys.signedIn)
+            lastErrorMessage = nil
+
             await loadMyApplications()
+            if role == .employer {
+                await loadEmployerData()
+            }
+
             showToast("Вітаємо в Vakansio!", icon: "checkmark.seal.fill", style: .success)
             Task { await loadRecommendedJobs() }
+
+            PushManager.shared.requestAuthorization()
+            PushManager.shared.sendStoredTokenIfNeeded()
+        } catch {
+            SessionStore.shared.clear()
+            isSignedIn = false
+            defaults.set(false, forKey: Keys.signedIn)
+            lastErrorMessage = error.localizedDescription
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+        }
+    }
+
+    func signOut() {
+        SessionStore.shared.clear()
+        isSignedIn = false
+        userId = ""
+        defaults.set(false, forKey: Keys.signedIn)
+        defaults.removeObject(forKey: Keys.userId)
+        userName = ""
+        userEmail = ""
+        resetLocalUserData()
+    }
+
+    private func resetLocalUserData() {
+        resume = ResumeProfile()
+        savedVacancyIDs = []
+        applications = []
+        employerJobs = []
+        employerApplications = []
+        isAdmin = false
+        companyEdrpou = ""
+        companyVerified = false
+        companyVerificationStatus = ""
+        subscriptionExpiresAt = ""
+        tier = .start
+
+        for key in [
+            Keys.saved, Keys.photo, Keys.headline, Keys.about, Keys.skills,
+            Keys.city, Keys.hasPDF, Keys.generatedText, Keys.tier
+        ] {
+            defaults.removeObject(forKey: key)
         }
     }
 
@@ -497,7 +571,7 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func saveProfile() async -> Bool {
+    func saveProfile(adminSecret: String? = nil) async -> Bool {
         let request = UpdateProfileRequest(
             id: userId,
             name: userName,
@@ -507,7 +581,8 @@ final class AppState: ObservableObject {
             about: resume.about,
             skills: resume.skills,
             city: resume.city,
-            resumeText: resume.generatedText
+            resumeText: resume.generatedText,
+            adminSecret: adminSecret
         )
 
         do {
@@ -521,6 +596,76 @@ final class AppState: ObservableObject {
             showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
             return false
         }
+    }
+
+    @discardableResult
+    func claimAdmin(secret: String) async -> Bool {
+        let cleaned = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return false }
+        let saved = await saveProfile(adminSecret: cleaned)
+        if saved && isAdmin {
+            showToast("Адмін-доступ активовано", icon: "lock.shield.fill", style: .success)
+            return true
+        }
+        return false
+    }
+
+    func verifySubscription(jws: String) async -> Bool {
+        do {
+            let result = try await api.verifySubscription(jws: jws)
+            tier = result.tier
+            subscriptionExpiresAt = result.expiresAt
+            defaults.set(result.tier.rawValue, forKey: Keys.tier)
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func moderateAdminJob(id: String, approve: Bool) async -> Bool {
+        do {
+            _ = try await api.moderateJob(jobId: id, action: approve ? "approve" : "reject")
+            showToast(approve ? "Вакансію схвалено" : "Вакансію відхилено", icon: "checkmark.seal.fill", style: .success)
+            return true
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func moderateAdminVerification(id: String, approve: Bool) async -> Bool {
+        do {
+            try await api.moderateVerification(requestId: id, action: approve ? "approve" : "reject")
+            showToast(approve ? "Компанію підтверджено" : "Заявку відхилено", icon: "checkmark.seal.fill", style: .success)
+            return true
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func searchJobs(
+        query: String,
+        city: String?,
+        category: String?,
+        minSalary: Int,
+        remote: Bool,
+        office: Bool,
+        page: Int,
+        limit: Int = 20
+    ) async throws -> JobSearchResponse {
+        try await api.searchJobs(
+            query: query,
+            city: city,
+            category: category,
+            minSalary: minSalary,
+            remote: remote,
+            office: office,
+            page: page,
+            limit: limit
+        )
     }
 
     func updateResume(
@@ -583,14 +728,17 @@ final class AppState: ObservableObject {
         defer { isDeletingAccount = false }
 
         try? await api.deleteProfile(userId: userId)
+        SessionStore.shared.clear()
 
         isSignedIn = false
+        userId = ""
         userName = ""
         userEmail = ""
         isAdmin = false
         companyEdrpou = ""
         companyVerified = false
         companyVerificationStatus = ""
+        subscriptionExpiresAt = ""
         applications = []
         employerJobs = []
         employerApplications = []
@@ -602,8 +750,8 @@ final class AppState: ObservableObject {
 
         for key in [
             Keys.onboarded, Keys.role, Keys.signedIn, Keys.userName, Keys.userEmail,
-            Keys.tier, Keys.saved, Keys.photo, Keys.headline, Keys.about, Keys.skills,
-            Keys.city, Keys.hasPDF, Keys.generatedText
+            Keys.userId, Keys.tier, Keys.saved, Keys.photo, Keys.headline, Keys.about,
+            Keys.skills, Keys.city, Keys.hasPDF, Keys.generatedText
         ] {
             defaults.removeObject(forKey: key)
         }
@@ -614,6 +762,10 @@ final class AppState: ObservableObject {
     // MARK: - Helpers
 
     private func apply(_ profile: UserProfile) {
+        if !profile.id.isEmpty {
+            userId = profile.id
+            defaults.set(profile.id, forKey: Keys.userId)
+        }
         if !profile.name.isEmpty { userName = profile.name }
         if !profile.email.isEmpty { userEmail = profile.email }
         if let photo = profile.photoBase64, !photo.isEmpty { resume.photoBase64 = photo }
@@ -627,6 +779,11 @@ final class AppState: ObservableObject {
         companyEdrpou = profile.companyEdrpou
         companyVerified = profile.companyVerified
         companyVerificationStatus = profile.verificationStatus
+        subscriptionExpiresAt = profile.subscriptionExpiresAt
+        if let serverTier = SubscriptionTier(serverValue: profile.subscriptionTier) {
+            tier = serverTier
+            defaults.set(serverTier.rawValue, forKey: Keys.tier)
+        }
     }
 
     private func cacheProfile() {

@@ -7,11 +7,14 @@ struct RootView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Group {
-                if app.hasCompletedOnboarding {
-                    MainTabView()
+                if !app.hasCompletedOnboarding {
+                    OnboardingView()
+                        .transition(.opacity)
+                } else if !app.isSignedIn {
+                    AuthView()
                         .transition(.opacity)
                 } else {
-                    OnboardingView()
+                    MainTabView()
                         .transition(.opacity)
                 }
             }
@@ -27,12 +30,12 @@ struct RootView: View {
         .background(VK.screen.ignoresSafeArea())
         .task {
             await app.bootstrap()
-            if app.hasCompletedOnboarding {
+            if app.isSignedIn {
                 PushManager.shared.requestAuthorization()
             }
         }
-        .onChange(of: app.hasCompletedOnboarding) { _, completed in
-            if completed {
+        .onChange(of: app.isSignedIn) { _, signedIn in
+            if signedIn {
                 PushManager.shared.requestAuthorization()
             }
         }

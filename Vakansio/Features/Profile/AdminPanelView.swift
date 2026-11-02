@@ -7,6 +7,7 @@ struct AdminPanelView: View {
     @State private var overview: AdminOverview?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var processingID: String?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -16,6 +17,7 @@ struct AdminPanelView: View {
                 } else if let overview {
                     usageCard(overview.usage)
                     countsGrid(overview.counts)
+                    pendingJobsCard(overview.pendingJobs)
                     pendingCard(overview.pending)
                     monthNote(overview.usage)
                 } else if isLoading {
@@ -135,6 +137,7 @@ struct AdminPanelView: View {
                 countCell(title: "Вакансії", value: counts.jobs, icon: "briefcase.fill", tint: VK.success)
                 countCell(title: "Відгуки", value: counts.applications, icon: "paperplane.fill", tint: VK.warning)
                 countCell(title: "На перевірці", value: counts.pendingVerifications, icon: "clock.badge.exclamationmark", tint: VK.danger)
+                countCell(title: "Ручна модерація", value: counts.pendingJobs, icon: "person.crop.circle.badge.questionmark", tint: VK.warning)
             }
         }
     }
@@ -170,6 +173,78 @@ struct AdminPanelView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(VK.hairline, lineWidth: 1)
         )
+    }
+
+    private func pendingJobsCard(_ jobs: [AdminPendingJob]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Вакансії на ручній перевірці")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(VK.textPrimary)
+
+                Spacer()
+
+                Text("\(jobs.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(VK.warning)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(VK.warning.opacity(0.12), in: Capsule())
+            }
+
+            if jobs.isEmpty {
+                Text("Немає вакансій, які AI передав на ручну перевірку.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(VK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(jobs) { job in
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(job.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(VK.textPrimary)
+                            .lineLimit(2)
+
+                        Text("\(job.companyName) · \(job.city)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(VK.textSecondary)
+                            .lineLimit(1)
+
+                        HStack(spacing: 8) {
+                            Button("Схвалити") {
+                                Task { await moderateJob(job, approve: true) }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(VK.success, in: Capsule())
+                            .buttonStyle(.plain)
+                            .disabled(processingID != nil)
+
+                            Button("Відхилити") {
+                                Task { await moderateJob(job, approve: false) }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(VK.danger)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(VK.danger.opacity(0.1), in: Capsule())
+                            .buttonStyle(.plain)
+                            .disabled(processingID != nil)
+
+                            if processingID == job.id {
+                                ProgressView().scaleEffect(0.7)
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(VK.screen, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+        }
+        .vkCard()
     }
 
     private func pendingCard(_ pending: [AdminPendingVerification]) -> some View {
@@ -209,6 +284,34 @@ struct AdminPanelView: View {
                         Text(dateText(item.createdAt))
                             .font(.system(size: 10))
                             .foregroundStyle(VK.textTertiary)
+
+                        HStack(spacing: 8) {
+                            Button("Схвалити") {
+                                Task { await moderateVerification(item, approve: true) }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(VK.success, in: Capsule())
+                            .buttonStyle(.plain)
+                            .disabled(processingID != nil)
+
+                            Button("Відхилити") {
+                                Task { await moderateVerification(item, approve: false) }
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(VK.danger)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(VK.danger.opacity(0.1), in: Capsule())
+                            .buttonStyle(.plain)
+                            .disabled(processingID != nil)
+
+                            if processingID == item.id {
+                                ProgressView().scaleEffect(0.7)
+                            }
+                        }
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -272,6 +375,22 @@ struct AdminPanelView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 32)
+    }
+
+    private func moderateJob(_ job: AdminPendingJob, approve: Bool) async {
+        guard processingID == nil else { return }
+        processingID = job.id
+        let success = await app.moderateAdminJob(id: job.id, approve: approve)
+        processingID = nil
+        if success { await load() }
+    }
+
+    private func moderateVerification(_ request: AdminPendingVerification, approve: Bool) async {
+        guard processingID == nil else { return }
+        processingID = request.id
+        let success = await app.moderateAdminVerification(id: request.id, approve: approve)
+        processingID = nil
+        if success { await load() }
     }
 
     private func load() async {

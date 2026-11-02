@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import StoreKit
 
 struct PaywallView: View {
     @EnvironmentObject private var app: AppState
@@ -7,9 +8,12 @@ struct PaywallView: View {
 
     var isModal: Bool = true
 
+    @StateObject private var store = StoreKitService()
     @State private var selected: SubscriptionTier = .pro
     @State private var isPurchasing = false
+    @State private var isRestoring = false
     @State private var showSuccess = false
+    @State private var purchaseError: String?
 
     private var buttonTitle: String {
         if app.tier == selected {
@@ -63,7 +67,12 @@ struct PaywallView: View {
                     if isModal { dismiss() }
                 }
             } message: {
-                Text("Ваш тариф «\(selected.name)» активний. Тепер доступно \(selected.vacancyLimit) активних вакансій.")
+                Text("Ваш тариф «\(app.tier.name)» активний. Тепер доступно \(app.tier.vacancyLimit) активних вакансій.")
+            }
+            .task {
+                guard StoreKitService.isEnabled else { return }
+                store.startListening()
+                await store.loadProducts()
             }
         }
     }
@@ -172,7 +181,7 @@ struct PaywallView: View {
                     Spacer(minLength: 4)
 
                     VStack(alignment: .trailing, spacing: 0) {
-                        Text(tier.priceText)
+                        Text(store.products.first { VakansioStoreProduct(rawValue: $0.id)?.tier == tier }?.displayPrice ?? tier.priceText)
                             .font(.system(size: 19, weight: .bold))
                             .foregroundStyle(VK.textPrimary)
 
@@ -246,12 +255,22 @@ struct PaywallView: View {
     }
 
     private var legal: some View {
-        Text("Тариф змінює ліміт активних вакансій у застосунку. Це прототип тарифікації без реального списання коштів.")
-            .font(.system(size: 10))
-            .foregroundStyle(VK.textTertiary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 8)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 6) {
+            Text("Оплата через App Store. Starter — безкоштовно; Pro та Business — автопоновлювані підписки. Керувати підпискою можна в налаштуваннях Apple ID.")
+                .font(.system(size: 10))
+                .foregroundStyle(VK.textTertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let message = store.errorMessage ?? purchaseError {
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundStyle(VK.danger)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 8)
     }
 
     // MARK: Subscribe
@@ -262,16 +281,23 @@ struct PaywallView: View {
 
             PrimaryButton(
                 title: buttonTitle,
-                icon: selected.price == 0 ? "leaf.fill" : "crown.fill",
+                icon: selected == .start ? "leaf.fill" : "crown.fill",
                 isLoading: isPurchasing,
-                isEnabled: app.tier != selected
+                isEnabled: app.tier != selected && selected != .start && selectedProduct != nil
             ) {
                 purchase()
             }
 
-            Text("Активація діє в межах застосунку.")
-                .font(.system(size: 10))
-                .foregroundStyle(VK.textTertiary)
+            Button {
+                restore()
+            } label: {
+                Text(isRestoring ? "Відновлюємо…" : "Відновити покупки")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            .disabled(isRestoring || isPurchasing)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -280,14 +306,52 @@ struct PaywallView: View {
     }
 
     private func purchase() {
-        guard app.tier != selected, !isPurchasing else { return }
+        guard app.tier != selected, selected != .start, !isPurchasing else { return }
+        guard let product = selectedProduct else {
+            purchaseError = "Цей тариф ще не налаштований в App Store."
+            return
+        }
 
         isPurchasing = true
+        purchaseError = nil
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            app.activate(selected)
-            isPurchasing = false
-            showSuccess = true
+        Task { @MainActor in
+            await store.purchase(product)
+            defer { isPurchasing = false }
+
+            guard let jws = store.latestJWS else {
+                purchaseError = store.errorMessage ?? "Не вдалося отримати транзакцію App Store."
+                return
+            }
+
+            let verified = await app.verifySubscription(jws: jws)
+            if verified {
+                showSuccess = true
+            } else {
+                purchaseError = app.lastErrorMessage ?? "Сервер не підтвердив підписку."
+            }
+        }
+    }
+
+    private func restore() {
+        guard !isRestoring else { return }
+        isRestoring = true
+        purchaseError = nil
+
+        Task { @MainActor in
+            await store.restorePurchases()
+            defer { isRestoring = false }
+
+            guard let jws = store.latestJWS else {
+                purchaseError = "Активних підписок не знайдено."
+                return
+            }
+
+            if await app.verifySubscription(jws: jws) {
+                showSuccess = true
+            } else {
+                purchaseError = app.lastErrorMessage ?? "Не вдалося відновити підписку."
+            }
         }
     }
 }

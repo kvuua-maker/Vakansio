@@ -25,6 +25,7 @@ struct ProfileView: View {
         case resumeEditor
         case resumePreview
         case aiWizard
+        case adminSecret
         case paywall
         case help
 
@@ -96,6 +97,8 @@ struct ProfileView: View {
             ResumePreviewSheet()
         case .aiWizard:
             AIResumeWizardView()
+        case .adminSecret:
+            AdminSecretSheet()
         case .paywall:
             PaywallView(isModal: true)
         case .help:
@@ -317,11 +320,7 @@ struct ProfileView: View {
         Task { @MainActor in
             let saved = await app.saveProfile()
             if saved {
-                app.showToast(
-                    app.isAdmin ? "Адмін-доступ активовано" : "Email збережено",
-                    icon: app.isAdmin ? "lock.shield.fill" : "checkmark.circle.fill",
-                    style: .success
-                )
+                app.showToast("Email збережено", icon: "checkmark.circle.fill", style: .success)
             }
         }
     }
@@ -733,7 +732,38 @@ struct ProfileView: View {
                 Button("Скасувати", role: .cancel) { }
                 Button("Зберегти") { saveEmail() }
             } message: {
-                Text("Email для входу. Для kvuua@yahoo.com відкриється прихована адмін-панель.")
+                Text("Email для звʼязку з роботодавцем або кандидатом.")
+            }
+
+            if !app.isAdmin {
+                Divider().padding(.leading, 54)
+
+                Button {
+                    activeSheet = .adminSecret
+                } label: {
+                    HStack(spacing: 12) {
+                        settingIcon("lock.shield.fill", tint: VK.danger)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Адмін-код")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(VK.textPrimary)
+
+                            Text("Для власника платформи")
+                                .font(.system(size: 11))
+                                .foregroundStyle(VK.textSecondary)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(VK.textTertiary)
+                    }
+                    .padding(14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             if app.isAdmin {
@@ -875,10 +905,10 @@ struct ProfileView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                AppleSignInButton(isLoading: app.isAuthLoading) {
-                    Task { await app.signInWithApple() }
-                }
-                .padding(.top, 4)
+                Text("Увійдіть через екран авторизації Vakansio")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.9))
+                    .padding(.top, 4)
             }
             .padding(20)
             .frame(maxWidth: .infinity)
