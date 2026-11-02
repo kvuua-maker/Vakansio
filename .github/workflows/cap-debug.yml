@@ -1,0 +1,97 @@
+name: Apple capability debug
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    env:
+      API: https://api.appstoreconnect.apple.com/v1
+      APP_BUNDLE: com.kvuua.vakansio
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install App Store Connect key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/private_keys/AuthKey_$ASC_KEY_ID.p8"
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '\r' > "$KEY"
+          chmod 600 "$KEY"
+          echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          echo "ASC_KEY_ID=$ASC_KEY_ID" >> "$GITHUB_ENV"
+
+      - name: Mint API token
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/jwt.js" <<'JS'
+          const fs = require('fs'), crypto = require('crypto');
+          const key = fs.readFileSync(process.env.ASC_KEY_PATH, 'utf8');
+          const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+          const now = Math.floor(Date.now() / 1000);
+          const input = b64({ alg: 'ES256', kid: process.env.ASC_KEY_ID, typ: 'JWT' }) + '.' +
+                        b64({ iss: process.env.ASC_ISSUER_ID, iat: now, exp: now + 900, aud: 'appstoreconnect-v1' });
+          const sig = crypto.sign('sha256', Buffer.from(input), { key, dsaEncoding: 'ieee-p1363' }).toString('base64url');
+          process.stdout.write(input + '.' + sig);
+          JS
+          TOKEN=$(node "$RUNNER_TEMP/jwt.js")
+          test -n "$TOKEN"
+          echo "ASC_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Inspect and enable Apple capability
+        run: |
+          set -euo pipefail
+          curl -s -o "$RUNNER_TEMP/bundles.json" -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds?limit=200"
+          export APP_IDENT="$APP_BUNDLE"
+          BID=$(node -e '
+            const fs=require("fs");
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/bundles.json","utf8"));
+            const b=(d.data||[]).find(x=>x.attributes.identifier===process.env.APP_IDENT);
+            if(!b){console.error("bundle not found");process.exit(4)}
+            process.stdout.write(b.id);
+          ')
+          echo "BID=$BID" >> "$GITHUB_ENV"
+          echo "bundle resource: $BID"
+
+          echo "=== current capabilities (default) ==="
+          curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities" | tee "$RUNNER_TEMP/caps-before.json"
+          echo
+          echo "=== current capabilities (with settings) ==="
+          curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities?fields%5BbundleIdCapabilities%5D=capabilityType,settings&limit=200" | tee "$RUNNER_TEMP/caps-settings.json"
+          echo
+
+          echo "=== POST APPLE_ID_AUTH minimal ==="
+          printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH"},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-req.json"
+          CODE=$(curl -s -o "$RUNNER_TEMP/apple-resp.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $ASC_TOKEN" -H 'Content-Type: application/json' --data @"$RUNNER_TEMP/apple-req.json" "$API/bundleIdCapabilities")
+          echo "HTTP $CODE"
+          cat "$RUNNER_TEMP/apple-resp.json"; echo
+
+          echo "=== POST APPLE_ID_AUTH with primary consent ==="
+          printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH","settings":[{"key":"PRIMARY_APP_CONSENT","options":[{"key":"PRIMARY_APP_CONSENT","enabled":true}]}]},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-req2.json"
+          CODE=$(curl -s -o "$RUNNER_TEMP/apple-resp2.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $ASC_TOKEN" -H 'Content-Type: application/json' --data @"$RUNNER_TEMP/apple-req2.json" "$API/bundleIdCapabilities")
+          echo "HTTP $CODE"
+          cat "$RUNNER_TEMP/apple-resp2.json"; echo
+
+          for i in 1 2 3 4 5 6; do
+            sleep 5
+            echo "=== attempt $i ==="
+            curl -s -H "Authorization: Bearer $ASC_TOKEN" "$API/bundleIds/$BID/bundleIdCapabilities?limit=200" | tee "$RUNNER_TEMP/caps-after.json"
+            echo
+            HAS=$(node -e '
+              const fs=require("fs");
+              const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/caps-after.json","utf8"));
+              const caps=(d.data||[]).map(c=>c.attributes.capabilityType);
+              process.stdout.write(caps.includes("APPLE_ID_AUTH")?"yes":"no");
+            ')
+            echo "APPLE_ID_AUTH: $HAS"
+            [ "$HAS" = "yes" ] && break
+          done
