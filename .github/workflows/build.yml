@@ -1,0 +1,60 @@
+name: Build (unsigned)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile for iOS Simulator
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app || true
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Selected: $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          ls -la Vakansio.xcodeproj
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Vakansio.xcodeproj \
+            -scheme Vakansio \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: ignore
