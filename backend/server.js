@@ -521,6 +521,7 @@ async function recommendedJobsFor(userId) {
     return jobs.map((job) => ({
       ...jobJson(job),
       matchScore: 0,
+      match_score: 0,
       matchReason: 'Заповніть резюме, щоб отримати AI-матчинг',
       matchSource: 'none',
     }));
@@ -564,6 +565,7 @@ async function recommendedJobsFor(userId) {
       return {
         ...jobJson(job),
         matchScore: match.score,
+        match_score: match.score,
         matchReason: match.reason,
         matchSource: match.source,
       };

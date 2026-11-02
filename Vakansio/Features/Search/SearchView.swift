@@ -121,6 +121,11 @@ struct SearchView: View {
                 debouncedQuery = newValue
             }
         }
+        .onChange(of: maxSalary) { _, newValue in
+            if minSalary > newValue {
+                minSalary = newValue
+            }
+        }
     }
 
     // MARK: Header

@@ -441,6 +441,7 @@ final class AppState: ObservableObject {
         if saved {
             await loadMyApplications()
             showToast("Вітаємо в Vakansio!", icon: "checkmark.seal.fill", style: .success)
+            Task { await loadRecommendedJobs() }
         }
     }
 
