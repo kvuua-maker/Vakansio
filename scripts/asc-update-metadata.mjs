@@ -210,7 +210,7 @@ async function auditPrices(appId) {
 }
 
 async function main() {
-  const report = { appId: null, versionId: null, localizationId: null, updated: false, keywordsUsed: null, keywordWarning: null, screenshots: null, prices: null, errors: [] };
+  const report = { appId: null, versionId: null, localizationId: null, updated: false, keywordsUsed: null, keywordWarning: null, whatsNew: null, screenshots: null, prices: null, errors: [] };
   try {
     const app = await findApp();
     report.appId = app.id;
@@ -225,7 +225,6 @@ async function main() {
       promotionalText: PROMOTIONAL,
       supportUrl: SUPPORT_URL,
       marketingUrl: MARKETING_URL,
-      whatsNew: WHATS_NEW,
     };
     try {
       await patchLocalization(localization, attributes);
@@ -239,13 +238,32 @@ async function main() {
       report.keywordsUsed = attributes.keywords;
       report.updated = true;
     }
-    console.log('METADATA_UPDATED ' + JSON.stringify({ version: version.attributes?.versionString, state: version.attributes?.appStoreState, locale: localization.attributes?.locale, keywords: report.keywordsUsed }));
 
-    report.screenshots = await auditScreenshots(localization);
-    console.log('SCREENSHOTS ' + JSON.stringify(report.screenshots));
+    try {
+      await patchLocalization(localization, { whatsNew: WHATS_NEW });
+      report.whatsNew = true;
+    } catch (error) {
+      report.whatsNew = false;
+      report.whatsNewError = error.message;
+      console.warn('WHATS_NEW_NOT_EDITABLE ' + error.message);
+    }
+    console.log('METADATA_UPDATED ' + JSON.stringify({ version: version.attributes?.versionString, state: version.attributes?.appStoreState, locale: localization.attributes?.locale, keywords: report.keywordsUsed, whatsNew: report.whatsNew }));
 
-    report.prices = await auditPrices(app.id);
-    console.log('PRICES ' + JSON.stringify(report.prices));
+    try {
+      report.screenshots = await auditScreenshots(localization);
+      console.log('SCREENSHOTS ' + JSON.stringify(report.screenshots));
+    } catch (error) {
+      report.screenshotsError = error.message;
+      console.error('SCREENSHOTS_FAILED ' + error.message);
+    }
+
+    try {
+      report.prices = await auditPrices(app.id);
+      console.log('PRICES ' + JSON.stringify(report.prices));
+    } catch (error) {
+      report.pricesError = error.message;
+      console.error('PRICES_FAILED ' + error.message);
+    }
   } catch (error) {
     report.errors.push(error.message);
     console.error('METADATA_FAILED ' + error.message);
