@@ -130,19 +130,33 @@ async function findOrCreateSubscription(groupId, spec) {
 
 async function ensureLocalization(sub, spec) {
   const rows = await listAll(`/subscriptions/${sub.id}/subscriptionLocalizations?limit=200`);
-  if (rows.some((row) => row.attributes?.locale === 'uk-UA')) return false;
-  await request('POST', '/subscriptionLocalizations', {
-    data: {
-      type: 'subscriptionLocalizations',
-      attributes: {
-        name: spec.localizedName,
-        description: spec.localizedDescription,
-        locale: 'uk-UA',
-      },
-      relationships: { subscription: { data: { type: 'subscriptions', id: sub.id } } },
-    },
-  });
-  return true;
+  if (rows.some((row) => ['uk', 'uk-UA'].includes(row.attributes?.locale))) {
+    return { created: false, locale: rows.find((row) => ['uk', 'uk-UA'].includes(row.attributes?.locale))?.attributes?.locale };
+  }
+
+  let lastError = null;
+  // App Store Connect accepts the Ukrainian language as "uk" on some API versions,
+  // while older documentation shows "uk-UA". Try both, preferring the supported one.
+  for (const locale of ['uk', 'uk-UA']) {
+    try {
+      await request('POST', '/subscriptionLocalizations', {
+        data: {
+          type: 'subscriptionLocalizations',
+          attributes: {
+            name: spec.localizedName,
+            description: spec.localizedDescription,
+            locale,
+          },
+          relationships: { subscription: { data: { type: 'subscriptions', id: sub.id } } },
+        },
+      });
+      return { created: true, locale };
+    } catch (error) {
+      lastError = error;
+      if (!/UNSUPPORTED_LOCALE_CODE/i.test(error.message)) throw error;
+    }
+  }
+  throw lastError || new Error('No supported Ukrainian locale');
 }
 
 async function pricePoints(subId) {
@@ -164,7 +178,7 @@ async function ensurePrice(sub, spec) {
   if (!exact) {
     console.warn(`WARN: exact ${spec.price} UAH point not found; using ${nearest.attributes?.customerPrice} UAH`);
   }
-  const start = new Date();
+  const start = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000);
   const startDate = start.toISOString().slice(0, 10);
   await request('POST', '/subscriptionPrices', {
     data: {
@@ -180,8 +194,16 @@ async function ensurePrice(sub, spec) {
 }
 
 async function uploadScreenshot(sub, label) {
-  const existing = await request('GET', `/subscriptions/${sub.id}/appStoreReviewScreenshot`);
-  if (existing?.data?.id) return { skipped: true, id: existing.data.id };
+  let existing = null;
+  try {
+    existing = await request('GET', `/subscriptions/${sub.id}/appStoreReviewScreenshot`);
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  if (existing?.data?.id) {
+    console.log(`SCREENSHOT ${label}: already present ${existing.data.id}`);
+    return { skipped: true, id: existing.data.id };
+  }
 
   const imagePath = path.join(__dirname, 'assets', 'subscription-review.png');
   const bytes = fs.readFileSync(imagePath);
@@ -208,6 +230,7 @@ async function uploadScreenshot(sub, label) {
       throw new Error(`Screenshot upload failed HTTP ${response.status}: ${text.slice(0, 300)}`);
     }
   }
+  console.log(`SCREENSHOT ${label}: uploaded ${screenshot.id}`);
   await request('PATCH', `/subscriptionAppStoreReviewScreenshots/${screenshot.id}`, {
     data: {
       type: 'subscriptionAppStoreReviewScreenshots',
@@ -271,7 +294,8 @@ try {
       console.log(`Subscription ${spec.productId}: ${sub.id} (${subCreated ? 'created' : 'existing'})`);
 
       try {
-        entry.localizationCreated = await ensureLocalization(sub, spec);
+        entry.localization = await ensureLocalization(sub, spec);
+        console.log(`LOCALIZATION ${spec.productId}: ${JSON.stringify(entry.localization)}`);
       } catch (error) {
         entry.localizationError = error.message;
         report.errors.push(`${spec.productId} localization: ${error.message}`);
