@@ -344,7 +344,7 @@ struct AdminPanelView: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(VK.textPrimary)
 
-            Text("Увійдіть з email kvuua@yahoo.com, щоб побачити панель.")
+            Text("Увійдіть з адмін-кодом у профілі, щоб побачити панель.")
                 .font(.system(size: 12))
                 .foregroundStyle(VK.textSecondary)
                 .multilineTextAlignment(.center)

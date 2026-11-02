@@ -18,12 +18,16 @@ struct CreateVacancyView: View {
     @State private var requirements = ""
     @State private var showSuccess = false
     @State private var createdJob: Vacancy?
+    @State private var titleError: String?
+    @State private var descriptionError: String?
+    @State private var submitError: String?
 
     private var canSubmit: Bool {
         !app.isSavingJob
-            && app.canCreateVacancy
-            && !title.vkTrimmed.isEmpty
-            && description.vkTrimmed.count >= 20
+    }
+
+    private var descriptionCount: Int {
+        description.vkTrimmed.count
     }
 
     var body: some View {
@@ -39,6 +43,9 @@ struct CreateVacancyView: View {
                     }
 
                     formCard
+                    if let submitError {
+                        formErrorBanner(submitError)
+                    }
                     moderationHint
                 }
                 .padding(.horizontal, 16)
@@ -73,6 +80,14 @@ struct CreateVacancyView: View {
             }
         } message: {
             Text("Статус: \((createdJob?.status ?? .pending).title). AI перевіряє вакансію на шахрайство та нецензурну лексику. Після схвалення вона з'явиться у стрічці.")
+        }
+        .onChange(of: title) { _, _ in
+            titleError = nil
+            submitError = nil
+        }
+        .onChange(of: description) { _, _ in
+            descriptionError = nil
+            submitError = nil
         }
     }
 
@@ -126,10 +141,14 @@ struct CreateVacancyView: View {
         VStack(alignment: .leading, spacing: 14) {
             LabeledField(
                 label: "Назва вакансії",
-                placeholder: "Наприклад, Middle iOS Developer",
+                placeholder: "Наприклад, Водій таксі",
                 text: $title,
                 icon: "briefcase"
             )
+
+            if let titleError {
+                fieldError(titleError)
+            }
 
             LabeledField(
                 label: "Місто",
@@ -166,6 +185,26 @@ struct CreateVacancyView: View {
                 text: $description,
                 minHeight: 140
             )
+
+            HStack(alignment: .top, spacing: 8) {
+                if let descriptionError {
+                    Text(descriptionError)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(VK.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Мінімум 20 символів")
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.textTertiary)
+                }
+
+                Spacer(minLength: 4)
+
+                Text("\(descriptionCount)/20")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(descriptionCount >= 20 ? VK.success : VK.warning)
+            }
+            .padding(.horizontal, 2)
 
             LabeledTextEditor(
                 label: "Вимоги",
@@ -227,6 +266,35 @@ struct CreateVacancyView: View {
         .padding(.horizontal, 4)
     }
 
+    private func fieldError(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(VK.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 2)
+    }
+
+    private func formErrorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VK.danger)
+
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(VK.danger)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(VK.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(VK.danger.opacity(0.2), lineWidth: 1)
+        )
+    }
+
     private var submitBar: some View {
         VStack(spacing: 0) {
             Divider().overlay(VK.hairline)
@@ -249,7 +317,28 @@ struct CreateVacancyView: View {
     // MARK: Actions
 
     private func submit() {
-        guard canSubmit else { return }
+        guard !app.isSavingJob else { return }
+
+        titleError = nil
+        descriptionError = nil
+        submitError = nil
+
+        let cleanTitle = title.vkTrimmed
+        let cleanDescription = description.vkTrimmed
+
+        if cleanTitle.isEmpty {
+            titleError = "Вкажіть назву вакансії"
+        }
+        if cleanDescription.count < 20 {
+            descriptionError = "Опис має містити щонайменше 20 символів (зараз \(cleanDescription.count))"
+        }
+
+        guard titleError == nil, descriptionError == nil else { return }
+
+        guard app.canCreateVacancy else {
+            submitError = "Ліміт тарифу \(app.tier.name) вичерпано. Архівуйте вакансію або змініть тариф."
+            return
+        }
 
         let minSalary = Int(salaryMin.vkTrimmed) ?? 0
         let maxSalary = max(minSalary, Int(salaryMax.vkTrimmed) ?? minSalary)
@@ -260,8 +349,8 @@ struct CreateVacancyView: View {
 
         Task {
             let job = await app.createJob(
-                title: title.vkTrimmed,
-                description: description.vkTrimmed,
+                title: cleanTitle,
+                description: cleanDescription,
                 salaryMin: minSalary,
                 salaryMax: maxSalary,
                 city: city.vkTrimmed.isEmpty ? "Київ" : city.vkTrimmed,
@@ -272,6 +361,8 @@ struct CreateVacancyView: View {
             if let job {
                 createdJob = job
                 showSuccess = true
+            } else {
+                submitError = app.jobCreationError ?? app.lastErrorMessage ?? "Не вдалося створити вакансію."
             }
         }
     }
@@ -294,5 +385,8 @@ struct CreateVacancyView: View {
         description = ""
         requirements = ""
         createdJob = nil
+        titleError = nil
+        descriptionError = nil
+        submitError = nil
     }
 }

@@ -732,7 +732,7 @@ struct ProfileView: View {
                 Button("Скасувати", role: .cancel) { }
                 Button("Зберегти") { saveEmail() }
             } message: {
-                Text("Email для звʼязку з роботодавцем або кандидатом.")
+                Text("Email для акаунта та сервісних листів. Він не показується роботодавцям або кандидатам.")
             }
 
             if !app.isAdmin {

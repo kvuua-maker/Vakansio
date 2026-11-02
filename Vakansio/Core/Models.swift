@@ -127,8 +127,6 @@ struct Vacancy: Identifiable, Hashable {
     var responsibilities: [String]
     var requirements: [String]
     var benefits: [String]
-    var contactEmail: String
-    var contactPhone: String?
     var postedAt: Date
     var isVerified: Bool
     var isUrgent: Bool
@@ -156,8 +154,6 @@ struct Vacancy: Identifiable, Hashable {
         responsibilities: [String] = [],
         requirements: [String] = [],
         benefits: [String] = [],
-        contactEmail: String = "hr@vakansio.app",
-        contactPhone: String? = nil,
         postedAt: Date = Date(),
         isVerified: Bool = true,
         isUrgent: Bool = false,
@@ -184,8 +180,6 @@ struct Vacancy: Identifiable, Hashable {
         self.responsibilities = responsibilities
         self.requirements = requirements
         self.benefits = benefits
-        self.contactEmail = contactEmail
-        self.contactPhone = contactPhone
         self.postedAt = postedAt
         self.isVerified = isVerified
         self.isUrgent = isUrgent
@@ -266,7 +260,6 @@ struct Application: Identifiable, Hashable {
     var coverLetter: String
     var resumeText: String
     var candidateName: String
-    var candidateEmail: String
     var candidatePhotoBase64: String?
     var aiScore: Int
     var aiSummary: String
@@ -279,7 +272,6 @@ struct Application: Identifiable, Hashable {
         coverLetter: String = "",
         resumeText: String = "",
         candidateName: String = "",
-        candidateEmail: String = "",
         candidatePhotoBase64: String? = nil,
         aiScore: Int = 0,
         aiSummary: String = ""
@@ -291,7 +283,6 @@ struct Application: Identifiable, Hashable {
         self.coverLetter = coverLetter
         self.resumeText = resumeText
         self.candidateName = candidateName
-        self.candidateEmail = candidateEmail
         self.candidatePhotoBase64 = candidatePhotoBase64
         self.aiScore = aiScore
         self.aiSummary = aiSummary

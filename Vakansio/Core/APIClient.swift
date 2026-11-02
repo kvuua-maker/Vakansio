@@ -382,14 +382,12 @@ struct CreateJobRequest: Encodable {
     let category: String
     let requirements: [String]
     let benefits: [String]
-    let contactEmail: String
 }
 
 struct CreateApplicationRequest: Encodable {
     let jobId: String
     let userId: String
     let name: String
-    let email: String
     let resumeText: String
     let coverLetter: String
     let photoBase64: String?
@@ -447,7 +445,6 @@ struct JobDTO: Decodable {
     let experience: String?
     let requirements: [String]?
     let benefits: [String]?
-    let contactEmail: String?
     let status: String?
     let verified: Bool?
     let applicationsCount: Int?
@@ -488,8 +485,6 @@ struct JobDTO: Decodable {
             responsibilities: [],
             requirements: requirements ?? [],
             benefits: benefits ?? [],
-            contactEmail: contactEmail ?? "hr@vakansio.app",
-            contactPhone: nil,
             postedAt: postedAt,
             isVerified: verified ?? false,
             isUrgent: false,
@@ -507,7 +502,6 @@ struct ApplicationDTO: Decodable {
     let id: String
     let status: String?
     let candidateName: String?
-    let candidateEmail: String?
     let photoBase64: String?
     let resumeText: String?
     let coverLetter: String?
@@ -525,7 +519,6 @@ struct ApplicationDTO: Decodable {
             coverLetter: coverLetter ?? "",
             resumeText: resumeText ?? "",
             candidateName: candidateName ?? "",
-            candidateEmail: candidateEmail ?? "",
             candidatePhotoBase64: photoBase64,
             aiScore: aiScore ?? 0,
             aiSummary: aiSummary ?? ""

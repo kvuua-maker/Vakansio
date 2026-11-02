@@ -38,6 +38,7 @@ final class AppState: ObservableObject {
     @Published var isLoadingEmployer = false
     @Published var isLoadingCandidates = false
     @Published var isSavingJob = false
+    @Published var jobCreationError: String?
     @Published var isSavingProfile = false
     @Published var lastErrorMessage: String?
 
@@ -247,7 +248,6 @@ final class AppState: ObservableObject {
         }
 
         let name = userName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let email = userEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         var resumeText = resume.resumeText.trimmingCharacters(in: .whitespacesAndNewlines)
         var photoBase64 = resume.photoBase64
 
@@ -274,7 +274,6 @@ final class AppState: ObservableObject {
             jobId: vacancy.id,
             userId: userId,
             name: name.isEmpty ? "Кандидат Vakansio" : name,
-            email: email,
             resumeText: resumeText.isEmpty ? "Кандидат Vakansio" : resumeText,
             coverLetter: coverLetter.trimmingCharacters(in: .whitespacesAndNewlines),
             photoBase64: photoBase64
@@ -402,6 +401,7 @@ final class AppState: ObservableObject {
         requirements: [String]
     ) async -> Vacancy? {
         isSavingJob = true
+        jobCreationError = nil
         defer { isSavingJob = false }
 
         let companyName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -415,8 +415,7 @@ final class AppState: ObservableObject {
             city: city,
             category: category,
             requirements: requirements,
-            benefits: [],
-            contactEmail: userEmail
+            benefits: []
         )
 
         do {
@@ -432,6 +431,7 @@ final class AppState: ObservableObject {
             return job
         } catch {
             lastErrorMessage = error.localizedDescription
+            jobCreationError = error.localizedDescription
             showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
             return nil
         }

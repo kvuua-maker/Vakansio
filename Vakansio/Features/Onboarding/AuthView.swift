@@ -39,7 +39,7 @@ struct AuthView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Text("Vakansio використовує Apple ID лише для створення захищеного профілю. Ваш email не передається роботодавцям.")
+                    Text("Email використовується лише для акаунта та сервісних листів. Спілкування з роботодавцями — тільки у внутрішньому чаті.")
                         .font(.system(size: 11))
                         .foregroundStyle(VK.textTertiary)
                         .multilineTextAlignment(.center)

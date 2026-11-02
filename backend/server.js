@@ -323,7 +323,6 @@ function jobJson(row) {
     experience: row.experience,
     requirements: parseArray(row.requirements),
     benefits: parseArray(row.benefits),
-    contactEmail: row.contact_email,
     status: row.status,
     verified: Boolean(row.verified),
     companyEdrpou: row.company_edrpou || '',
@@ -346,7 +345,6 @@ function applicationJson(row, jobRow) {
     userId: row.user_id,
     status: row.status,
     candidateName: row.name,
-    candidateEmail: row.email,
     photoBase64: row.photo,
     resumeText: row.resume_text,
     coverLetter: row.cover_letter,
@@ -1610,7 +1608,7 @@ async function handle(req, res) {
       str(body.experience) || '1–3 роки',
       JSON.stringify(jsonArray(body.requirements)),
       JSON.stringify(jsonArray(body.benefits)),
-      str(body.contactEmail) || (employer && employer.email) || '',
+      (employer && employer.email) || '',
       'pending',
       0,
       createdAt
@@ -1708,7 +1706,7 @@ async function handle(req, res) {
 
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     const name = str(body.name) || (user && user.name) || 'Кандидат';
-    const email = str(body.email) || (user && user.email) || '';
+    const email = (user && user.email) || '';
     const resumeText = str(body.resumeText);
     const coverLetter = str(body.coverLetter);
     const photo = str(body.photoBase64) || (user && user.photo) || null;

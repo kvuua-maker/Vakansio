@@ -226,12 +226,6 @@ struct CandidateDetailSheet: View {
                     .foregroundStyle(VK.textPrimary)
                     .multilineTextAlignment(.center)
 
-                if !application.candidateEmail.isEmpty {
-                    Text(application.candidateEmail)
-                        .font(.system(size: 12))
-                        .foregroundStyle(VK.textSecondary)
-                }
-
                 Text(application.vacancy.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(VK.brand)

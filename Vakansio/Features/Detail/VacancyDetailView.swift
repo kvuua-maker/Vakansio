@@ -33,7 +33,6 @@ struct VacancyDetailView: View {
                 bulletCard(title: "Обов'язки", icon: "checklist", items: vacancy.responsibilities)
                 bulletCard(title: "Вимоги", icon: "checkmark.circle", items: vacancy.requirements)
                 bulletCard(title: "Ми пропонуємо", icon: "gift.fill", items: vacancy.benefits)
-                contactCard
                 disclaimer
             }
             .padding(.horizontal, 16)
@@ -274,53 +273,10 @@ struct VacancyDetailView: View {
         }
     }
 
-    // MARK: Contacts
+    // MARK: Contact
 
-    private var contactCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Контакти", icon: "phone.fill")
+    // Contact details are intentionally not exposed; a conversation thread is used instead.
 
-            contactRow(icon: "envelope.fill", value: vacancy.contactEmail)
-
-            if let phone = vacancy.contactPhone {
-                contactRow(icon: "phone.fill", value: phone)
-            }
-
-            Text("Натисніть, щоб скопіювати контакт")
-                .font(.system(size: 11))
-                .foregroundStyle(VK.textTertiary)
-        }
-        .vkCard(padding: 18)
-    }
-
-    private func contactRow(icon: String, value: String) -> some View {
-        Button {
-            UIPasteboard.general.string = value
-            app.showToast("Скопійовано: \(value)", icon: "doc.on.doc.fill", style: .info)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(VK.brand)
-                    .frame(width: 32, height: 32)
-                    .background(VK.brand.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                Text(value)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(VK.textPrimary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 13))
-                    .foregroundStyle(VK.textTertiary)
-            }
-            .padding(10)
-            .background(VK.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
 
     private var disclaimer: some View {
         HStack(alignment: .top, spacing: 8) {
