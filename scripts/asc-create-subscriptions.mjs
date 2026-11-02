@@ -164,6 +164,20 @@ async function pricePoints(subId) {
 }
 
 async function ensurePrice(sub, spec) {
+  // New subscriptions are not automatically available in every storefront.
+  // Without this, Apple rejects a UKR price point as an unsupported territory.
+  try {
+    await request('PATCH', `/subscriptions/${sub.id}`, {
+      data: {
+        type: 'subscriptions',
+        id: sub.id,
+        attributes: { availableInAllTerritories: true },
+      },
+    });
+  } catch (error) {
+    console.warn(`WARN: could not enable all territories for ${spec.productId}: ${error.message}`);
+  }
+
   const existing = await listAll(`/subscriptions/${sub.id}/prices?limit=200`);
   if (existing.length > 0) {
     return { skipped: true, existingCount: existing.length };
