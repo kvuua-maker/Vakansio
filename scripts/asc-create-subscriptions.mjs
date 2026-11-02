@@ -131,7 +131,7 @@ async function ensureGroupLocalization(group) {
   let lastError = null;
   for (const locale of ['uk', 'uk-UA']) {
     try {
-      await request('POST', '/v2/subscriptionGroupLocalizations', {
+      await request('POST', 'https://api.appstoreconnect.apple.com/v2/subscriptionGroupLocalizations', {
         data: {
           type: 'subscriptionGroupLocalizations',
           attributes: {
