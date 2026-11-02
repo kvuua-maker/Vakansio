@@ -2766,6 +2766,10 @@ async function importExternalJobs() {
 
 seedDatabase(db);
 ensureMatchVersion();
+importExternalJobs().catch((error) => console.warn('External jobs import failed:', error.message));
+setInterval(() => {
+  importExternalJobs().catch((error) => console.warn('External jobs refresh failed:', error.message));
+}, 30 * 60 * 1000).unref();
 
 server.listen(PORT, HOST, () => {
   console.log(`Vakansio API listening on http://${HOST}:${PORT}`);
