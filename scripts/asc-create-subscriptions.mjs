@@ -163,21 +163,51 @@ async function pricePoints(subId) {
   return listAll(`/subscriptions/${subId}/pricePoints?filter%5Bterritory%5D=UKR&limit=200`);
 }
 
-async function ensurePrice(sub, spec) {
-  // New subscriptions are not automatically available in every storefront.
-  // Without this, Apple rejects a UKR price point as an unsupported territory.
-  try {
-    await request('PATCH', `/subscriptions/${sub.id}`, {
-      data: {
-        type: 'subscriptions',
-        id: sub.id,
-        attributes: { availableInAllTerritories: true },
-      },
-    });
-  } catch (error) {
-    console.warn(`WARN: could not enable all territories for ${spec.productId}: ${error.message}`);
+async function ensurePlanAvailability(sub) {
+  const existing = await listAll(`/subscriptions/${sub.id}/planAvailabilities?limit=200&include=availableTerritories&limit%5BavailableTerritories%5D=50`);
+  const results = [];
+  for (const planType of ['UPFRONT', 'MONTHLY']) {
+    const match = existing.find((row) => row.attributes?.planType === planType);
+    try {
+      if (match) {
+        const territories = (match.relationships?.availableTerritories?.data || []).map((row) => row.id);
+        if (!territories.includes('UKR')) {
+          await request('PATCH', `/subscriptionPlanAvailabilities/${match.id}`, {
+            data: {
+              type: 'subscriptionPlanAvailabilities',
+              id: match.id,
+              attributes: { availableInNewTerritories: true },
+              relationships: {
+                availableTerritories: { data: [{ type: 'territories', id: 'UKR' }] },
+              },
+            },
+          });
+        }
+        results.push({ planType, id: match.id, updated: true });
+      } else {
+        const created = await request('POST', '/subscriptionPlanAvailabilities', {
+          data: {
+            type: 'subscriptionPlanAvailabilities',
+            attributes: { planType, availableInNewTerritories: true },
+            relationships: {
+              subscription: { data: { type: 'subscriptions', id: sub.id } },
+              availableTerritories: { data: [{ type: 'territories', id: 'UKR' }] },
+            },
+          },
+        });
+        results.push({ planType, id: created.data?.id, created: true });
+      }
+    } catch (error) {
+      results.push({ planType, error: error.message });
+      console.warn(`WARN: plan availability ${planType} for ${sub.id}: ${error.message}`);
+    }
   }
+  return results;
+}
 
+async function ensurePrice(sub, spec) {
+  const availability = await ensurePlanAvailability(sub);
+  console.log(`AVAILABILITY ${spec.productId}: ${JSON.stringify(availability)}`);
   const existing = await listAll(`/subscriptions/${sub.id}/prices?limit=200`);
   if (existing.length > 0) {
     return { skipped: true, existingCount: existing.length };
