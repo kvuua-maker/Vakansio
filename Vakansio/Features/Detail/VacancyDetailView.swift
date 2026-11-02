@@ -8,6 +8,8 @@ struct VacancyDetailView: View {
 
     @State private var isApplying = false
     @State private var showAppliedAlert = false
+    @State private var isStartingChat = false
+    @State private var activeConversation: Conversation?
 
     private var isSaved: Bool {
         app.isSaved(vacancy)
@@ -33,6 +35,11 @@ struct VacancyDetailView: View {
                 bulletCard(title: "Обов'язки", icon: "checklist", items: vacancy.responsibilities)
                 bulletCard(title: "Вимоги", icon: "checkmark.circle", items: vacancy.requirements)
                 bulletCard(title: "Ми пропонуємо", icon: "gift.fill", items: vacancy.benefits)
+
+                if !isOwnVacancy {
+                    writeButton
+                }
+
                 disclaimer
             }
             .padding(.horizontal, 16)
@@ -69,6 +76,22 @@ struct VacancyDetailView: View {
             Button("Добре") { }
         } message: {
             Text("Роботодавець отримав ваше збережене резюме та фото.")
+        }
+        .sheet(item: $activeConversation) { conversation in
+            NavigationStack {
+                ChatView(
+                    conversationId: conversation.id,
+                    title: conversation.jobTitle,
+                    counterpartyName: conversation.counterpartyName,
+                    counterpartId: conversation.counterpartId
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Закрити") { activeConversation = nil }
+                            .foregroundStyle(VK.textSecondary)
+                    }
+                }
+            }
         }
     }
 
@@ -365,6 +388,66 @@ struct VacancyDetailView: View {
             .padding(.bottom, 6)
         }
         .background(.regularMaterial)
+    }
+
+    private var isOwnVacancy: Bool {
+        !vacancy.employerId.isEmpty && vacancy.employerId == app.userId
+    }
+
+    private var writeButton: some View {
+        Button {
+            startChat()
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(VK.brand)
+                        .frame(width: 42, height: 42)
+
+                    if isStartingChat {
+                        ProgressView()
+                            .tint(Color.white)
+                            .scaleEffect(0.8)
+                    } else {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Написати")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(VK.textPrimary)
+
+                    Text("Чат з роботодавцем без email")
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VK.textTertiary)
+            }
+            .vkCard()
+        }
+        .buttonStyle(.plain)
+        .disabled(isStartingChat)
+    }
+
+    private func startChat() {
+        guard !isStartingChat else { return }
+        isStartingChat = true
+
+        Task { @MainActor in
+            let conversation = await app.startConversation(jobId: vacancy.id)
+            isStartingChat = false
+            if let conversation {
+                activeConversation = conversation
+            }
+        }
     }
 
     private func quickApply() {

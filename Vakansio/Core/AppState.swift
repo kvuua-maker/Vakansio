@@ -29,6 +29,7 @@ final class AppState: ObservableObject {
     @Published var applications: [Application] = []
     @Published var employerJobs: [Vacancy] = []
     @Published var employerApplications: [Application] = []
+    @Published var conversations: [Conversation] = []
     @Published var savedVacancyIDs: Set<String> = []
     @Published var resume: ResumeProfile = ResumeProfile()
 
@@ -37,6 +38,7 @@ final class AppState: ObservableObject {
     @Published var isLoadingApplications = false
     @Published var isLoadingEmployer = false
     @Published var isLoadingCandidates = false
+    @Published var isLoadingConversations = false
     @Published var isSavingJob = false
     @Published var jobCreationError: String?
     @Published var isSavingProfile = false
@@ -301,6 +303,44 @@ final class AppState: ObservableObject {
         }
     }
 
+    func loadConversations() async {
+        guard !isLoadingConversations else { return }
+        isLoadingConversations = true
+        defer { isLoadingConversations = false }
+
+        do {
+            conversations = try await api.fetchConversations()
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func startConversation(jobId: String, candidateId: String? = nil) async -> Conversation? {
+        do {
+            let conversation = try await api.createConversation(jobId: jobId, candidateId: candidateId)
+            if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+                conversations[index] = conversation
+            } else {
+                conversations.insert(conversation, at: 0)
+            }
+            lastErrorMessage = nil
+            return conversation
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return nil
+        }
+    }
+
+    func fetchConversationMessages(conversationId: String) async throws -> [ChatMessage] {
+        try await api.fetchConversationMessages(conversationId: conversationId)
+    }
+
+    func sendConversationMessage(conversationId: String, text: String) async throws -> ChatMessage {
+        try await api.sendConversationMessage(conversationId: conversationId, text: text)
+    }
+
     func fetchMessages(applicationId: String) async throws -> [ChatMessage] {
         try await api.fetchMessages(applicationId: applicationId, userId: userId)
     }
@@ -543,6 +583,7 @@ final class AppState: ObservableObject {
         applications = []
         employerJobs = []
         employerApplications = []
+        conversations = []
         isAdmin = false
         companyEdrpou = ""
         companyVerified = false
@@ -742,6 +783,7 @@ final class AppState: ObservableObject {
         applications = []
         employerJobs = []
         employerApplications = []
+        conversations = []
         savedVacancyIDs = []
         resume = ResumeProfile()
         hasCompletedOnboarding = false

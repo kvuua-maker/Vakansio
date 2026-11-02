@@ -112,6 +112,7 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
 
 struct Vacancy: Identifiable, Hashable {
     let id: String
+    var employerId: String
     var title: String
     var company: Company
     var salaryMin: Int
@@ -139,6 +140,7 @@ struct Vacancy: Identifiable, Hashable {
 
     init(
         id: String,
+        employerId: String = "",
         title: String,
         company: Company,
         salaryMin: Int,
@@ -165,6 +167,7 @@ struct Vacancy: Identifiable, Hashable {
         matchSource: String? = nil
     ) {
         self.id = id
+        self.employerId = employerId
         self.title = title
         self.company = company
         self.salaryMin = salaryMin
@@ -254,6 +257,7 @@ enum ApplicationStatus: String, CaseIterable, Identifiable, Hashable {
 
 struct Application: Identifiable, Hashable {
     let id: String
+    let userId: String
     let vacancy: Vacancy
     var status: ApplicationStatus
     let appliedAt: Date
@@ -263,9 +267,11 @@ struct Application: Identifiable, Hashable {
     var candidatePhotoBase64: String?
     var aiScore: Int
     var aiSummary: String
+    var conversationId: String
 
     init(
         id: String,
+        userId: String = "",
         vacancy: Vacancy,
         status: ApplicationStatus = .sent,
         appliedAt: Date = Date(),
@@ -274,9 +280,11 @@ struct Application: Identifiable, Hashable {
         candidateName: String = "",
         candidatePhotoBase64: String? = nil,
         aiScore: Int = 0,
-        aiSummary: String = ""
+        aiSummary: String = "",
+        conversationId: String = ""
     ) {
         self.id = id
+        self.userId = userId
         self.vacancy = vacancy
         self.status = status
         self.appliedAt = appliedAt
@@ -286,6 +294,7 @@ struct Application: Identifiable, Hashable {
         self.candidatePhotoBase64 = candidatePhotoBase64
         self.aiScore = aiScore
         self.aiSummary = aiSummary
+        self.conversationId = conversationId
     }
 
     var candidateInitials: String {
@@ -554,10 +563,45 @@ struct ToastMessage: Identifiable, Equatable {
 struct ChatMessage: Identifiable, Hashable {
     let id: String
     let applicationId: String
+    let conversationId: String
     let senderId: String
     let senderRole: String
     let senderName: String
     let text: String
+    let createdAt: Date
+
+    init(
+        id: String,
+        applicationId: String = "",
+        conversationId: String = "",
+        senderId: String,
+        senderRole: String,
+        senderName: String,
+        text: String,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.applicationId = applicationId
+        self.conversationId = conversationId
+        self.senderId = senderId
+        self.senderRole = senderRole
+        self.senderName = senderName
+        self.text = text
+        self.createdAt = createdAt
+    }
+}
+
+struct Conversation: Identifiable, Hashable {
+    let id: String
+    let jobId: String
+    let candidateId: String
+    let employerId: String
+    let counterpartId: String
+    let counterpartName: String
+    let jobTitle: String
+    let companyName: String
+    let lastMessage: String
+    let lastMessageAt: Date
     let createdAt: Date
 }
 

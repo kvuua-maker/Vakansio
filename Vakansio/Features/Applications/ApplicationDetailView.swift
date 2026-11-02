@@ -133,9 +133,10 @@ struct ApplicationDetailView: View {
     private var chatLink: some View {
         NavigationLink {
             ChatView(
-                applicationId: application.id,
+                conversationId: application.conversationId,
                 title: application.vacancy.title,
-                counterpartyName: application.vacancy.company.name
+                counterpartyName: application.vacancy.company.name,
+                counterpartId: application.vacancy.employerId
             )
         } label: {
             HStack(spacing: 12) {

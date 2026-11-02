@@ -4,9 +4,10 @@ import Foundation
 struct ChatView: View {
     @EnvironmentObject private var app: AppState
 
-    let applicationId: String
+    let conversationId: String
     let title: String
     let counterpartyName: String
+    let counterpartId: String
 
     @State private var messages: [ChatMessage] = []
     @State private var text = ""
@@ -249,7 +250,7 @@ struct ChatView: View {
         if !silent { isLoading = true }
 
         do {
-            let fetched = try await app.fetchMessages(applicationId: applicationId)
+            let fetched = try await app.fetchConversationMessages(conversationId: conversationId)
             messages = fetched
             lastError = nil
         } catch {
@@ -268,7 +269,7 @@ struct ChatView: View {
 
         Task { @MainActor in
             do {
-                let message = try await app.sendChatMessage(applicationId: applicationId, text: value)
+                let message = try await app.sendConversationMessage(conversationId: conversationId, text: value)
                 if !messages.contains(where: { $0.id == message.id }) {
                     messages.append(message)
                 }

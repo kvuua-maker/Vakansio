@@ -171,6 +171,34 @@ struct APIClient {
         return dto.toModel()
     }
 
+    func createConversation(jobId: String, candidateId: String? = nil) async throws -> Conversation {
+        let dto: ConversationDTO = try await post(
+            path: "/v1/conversations",
+            body: ConversationCreateRequest(jobId: jobId, candidateId: candidateId)
+        )
+        return dto.toModel()
+    }
+
+    func fetchConversations() async throws -> [Conversation] {
+        let dtos: [ConversationDTO] = try await get(path: "/v1/conversations")
+        return dtos.map { $0.toModel() }
+    }
+
+    func fetchConversationMessages(conversationId: String) async throws -> [ChatMessage] {
+        let dtos: [ChatMessageDTO] = try await get(
+            path: "/v1/conversations/\(conversationId)/messages"
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func sendConversationMessage(conversationId: String, text: String) async throws -> ChatMessage {
+        let dto: ChatMessageDTO = try await post(
+            path: "/v1/conversations/\(conversationId)/messages",
+            body: ConversationMessageRequest(text: text)
+        )
+        return dto.toModel()
+    }
+
     func registerDevice(userId: String, token: String) async throws {
         let _: OKResponse = try await post(
             path: "/v1/devices",
@@ -471,6 +499,7 @@ struct JobDTO: Decodable {
 
         return Vacancy(
             id: id,
+            employerId: employerId ?? "",
             title: title,
             company: company,
             salaryMin: salaryMin,
@@ -500,6 +529,7 @@ struct JobDTO: Decodable {
 
 struct ApplicationDTO: Decodable {
     let id: String
+    let userId: String?
     let status: String?
     let candidateName: String?
     let photoBase64: String?
@@ -507,12 +537,14 @@ struct ApplicationDTO: Decodable {
     let coverLetter: String?
     let aiScore: Int?
     let aiSummary: String?
+    let conversationId: String?
     let createdAt: String?
     let job: JobDTO
 
     func toModel() -> Application {
         Application(
             id: id,
+            userId: userId ?? "",
             vacancy: job.toModel(),
             status: ApplicationStatus(rawValue: status ?? "sent") ?? .sent,
             appliedAt: APIDateParser.date(from: createdAt) ?? Date(),
@@ -521,7 +553,8 @@ struct ApplicationDTO: Decodable {
             candidateName: candidateName ?? "",
             candidatePhotoBase64: photoBase64,
             aiScore: aiScore ?? 0,
-            aiSummary: aiSummary ?? ""
+            aiSummary: aiSummary ?? "",
+            conversationId: conversationId ?? ""
         )
     }
 }
@@ -633,9 +666,51 @@ struct GeneratedResumeDTO: Decodable {
     }
 }
 
+struct ConversationDTO: Decodable {
+    let id: String
+    let jobId: String?
+    let candidateId: String?
+    let employerId: String?
+    let counterpartId: String?
+    let counterpartName: String?
+    let jobTitle: String?
+    let companyName: String?
+    let lastMessage: String?
+    let lastMessageAt: String?
+    let createdAt: String?
+
+    func toModel() -> Conversation {
+        Conversation(
+            id: id,
+            jobId: jobId ?? "",
+            candidateId: candidateId ?? "",
+            employerId: employerId ?? "",
+            counterpartId: counterpartId ?? "",
+            counterpartName: counterpartName ?? "Співрозмовник",
+            jobTitle: jobTitle ?? "",
+            companyName: companyName ?? "",
+            lastMessage: lastMessage ?? "",
+            lastMessageAt: APIDateParser.date(from: lastMessageAt)
+                ?? APIDateParser.date(from: createdAt)
+                ?? Date(),
+            createdAt: APIDateParser.date(from: createdAt) ?? Date()
+        )
+    }
+}
+
+private struct ConversationCreateRequest: Encodable {
+    let jobId: String
+    let candidateId: String?
+}
+
+private struct ConversationMessageRequest: Encodable {
+    let text: String
+}
+
 struct ChatMessageDTO: Decodable {
     let id: String
     let applicationId: String?
+    let conversationId: String?
     let senderId: String?
     let senderRole: String?
     let senderName: String?
@@ -646,6 +721,7 @@ struct ChatMessageDTO: Decodable {
         ChatMessage(
             id: id,
             applicationId: applicationId ?? "",
+            conversationId: conversationId ?? "",
             senderId: senderId ?? "",
             senderRole: senderRole ?? "seeker",
             senderName: senderName ?? "",

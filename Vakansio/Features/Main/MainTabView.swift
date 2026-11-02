@@ -37,6 +37,10 @@ private struct SeekerTabView: View {
             ProfileView()
                 .tabItem { Label("Профіль", systemImage: "person.crop.circle.fill") }
                 .tag(3)
+
+            ChatsView()
+                .tabItem { Label("Чати", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(4)
         }
         .tint(VK.brand)
     }
@@ -62,6 +66,10 @@ private struct EmployerTabView: View {
             ProfileView()
                 .tabItem { Label("Профіль", systemImage: "person.crop.circle.fill") }
                 .tag(3)
+
+            ChatsView()
+                .tabItem { Label("Чати", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(4)
         }
         .tint(VK.brand)
     }

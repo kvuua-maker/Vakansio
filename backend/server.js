@@ -128,7 +128,8 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
-    application_id TEXT NOT NULL,
+    application_id TEXT,
+    conversation_id TEXT NOT NULL DEFAULT '',
     sender_id TEXT NOT NULL,
     sender_role TEXT NOT NULL,
     sender_name TEXT NOT NULL DEFAULT '',
@@ -136,6 +137,19 @@ db.exec(`
     created_at TEXT NOT NULL,
     FOREIGN KEY(application_id) REFERENCES applications(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    employer_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_message_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(job_id, candidate_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_conversations_candidate ON conversations(candidate_id);
+  CREATE INDEX IF NOT EXISTS idx_conversations_employer ON conversations(employer_id);
 
   CREATE TABLE IF NOT EXISTS devices (
     user_id TEXT NOT NULL,
@@ -194,11 +208,53 @@ ensureColumn('users', 'apple_sub', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'subscription_tier', "TEXT NOT NULL DEFAULT 'starter'");
 ensureColumn('users', 'subscription_expires_at', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'subscription_original_transaction_id', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('messages', 'conversation_id', "TEXT NOT NULL DEFAULT ''");
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub
   ON users(apple_sub) WHERE apple_sub <> '';
 `);
+
+function migrateMessagesForConversations() {
+  const columns = db.prepare('PRAGMA table_info(messages)').all();
+  const applicationColumn = columns.find((entry) => entry.name === 'application_id');
+  if (!applicationColumn || !applicationColumn.notnull) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE messages_new (
+        id TEXT PRIMARY KEY,
+        application_id TEXT,
+        conversation_id TEXT NOT NULL DEFAULT '',
+        sender_id TEXT NOT NULL,
+        sender_role TEXT NOT NULL,
+        sender_name TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(application_id) REFERENCES applications(id) ON DELETE CASCADE
+      );
+      INSERT INTO messages_new
+        (id, application_id, conversation_id, sender_id, sender_role, sender_name, text, created_at)
+      SELECT id, application_id, COALESCE(conversation_id, ''), sender_id, sender_role, sender_name, text, created_at
+      FROM messages;
+      DROP TABLE messages;
+      ALTER TABLE messages_new RENAME TO messages;
+      CREATE INDEX IF NOT EXISTS idx_messages_application ON messages(application_id);
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+    `);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+migrateMessagesForConversations();
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);');
 
 // ---------- helpers ----------
 
@@ -350,9 +406,61 @@ function applicationJson(row, jobRow) {
     coverLetter: row.cover_letter,
     aiScore: row.ai_score,
     aiSummary: row.ai_summary,
+    conversationId: (getOrCreateConversation(jobRow, row.user_id) || {}).id || '',
     createdAt: row.created_at,
     job: jobJson(jobRow),
   };
+}
+
+function getOrCreateConversation(jobRow, candidateId) {
+  if (!jobRow || !candidateId || candidateId === jobRow.employer_id) return null;
+  let row = db.prepare(
+    'SELECT * FROM conversations WHERE job_id = ? AND candidate_id = ?'
+  ).get(jobRow.id, candidateId);
+  if (row) return row;
+  const createdAt = nowIso();
+  const conversationId = newId('conv');
+  db.prepare(
+    `INSERT INTO conversations (id, job_id, candidate_id, employer_id, created_at, last_message_at)
+     VALUES (?, ?, ?, ?, ?, '')`
+  ).run(conversationId, jobRow.id, candidateId, jobRow.employer_id, createdAt);
+  row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversationId);
+  return row;
+}
+
+function conversationJson(row, viewerId) {
+  if (!row) return null;
+  const job = getJobRow(row.job_id);
+  const isEmployer = viewerId === row.employer_id;
+  const counterpartId = isEmployer ? row.candidate_id : row.employer_id;
+  const counterpart = db.prepare('SELECT name FROM users WHERE id = ?').get(counterpartId);
+  const last = db.prepare(
+    'SELECT text, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1'
+  ).get(row.id);
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    candidateId: row.candidate_id,
+    employerId: row.employer_id,
+    counterpartId,
+    counterpartName: isEmployer
+      ? (counterpart ? counterpart.name || 'Кандидат' : 'Кандидат')
+      : (job ? job.company_name || 'Роботодавець' : 'Роботодавець'),
+    jobTitle: job ? job.title : '',
+    companyName: job ? job.company_name : '',
+    lastMessage: last ? last.text : '',
+    lastMessageAt: last ? last.created_at : (row.last_message_at || row.created_at),
+    createdAt: row.created_at,
+  };
+}
+
+function getConversationRow(id) {
+  return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
+}
+
+function canAccessConversation(userId, conversation) {
+  return Boolean(conversation) &&
+    (userId === conversation.candidate_id || userId === conversation.employer_id);
 }
 
 function profileJson(row) {
@@ -943,7 +1051,8 @@ async function verifyCompanyForUser(userId, edrpou) {
 function messageJson(row) {
   return {
     id: row.id,
-    applicationId: row.application_id,
+    applicationId: row.application_id || '',
+    conversationId: row.conversation_id || '',
     senderId: row.sender_id,
     senderRole: row.sender_role,
     senderName: row.sender_name,
@@ -1777,6 +1886,104 @@ async function handle(req, res) {
     const updatedApplication = getApplicationRow(application.id);
     send(res, 200, applicationJson(updatedApplication, getJobRow(job.id)));
     pushStatusChange(updatedApplication.user_id, job.title, status, updatedApplication.id);
+    return;
+  }
+
+  // Conversations (job-scoped chat, independent of an application)
+  if (pathname === '/v1/conversations' && method === 'GET') {
+    const userId = req.user.id;
+    const rows = db.prepare(
+      `SELECT * FROM conversations
+       WHERE candidate_id = ? OR employer_id = ?
+       ORDER BY COALESCE(NULLIF(last_message_at, ''), created_at) DESC`
+    ).all(userId, userId);
+
+    send(res, 200, rows.map((row) => conversationJson(row, userId)).filter(Boolean));
+    return;
+  }
+
+  if (pathname === '/v1/conversations' && method === 'POST') {
+    const body = await readJson(req);
+    const jobId = str(body.jobId);
+    const requestedCandidate = str(body.candidateId);
+    const userId = req.user.id;
+    if (!jobId) throw httpError(400, 'Потрібен jobId');
+
+    const job = getJobRow(jobId);
+    if (!job) throw httpError(404, 'Вакансію не знайдено');
+
+    let candidateId = userId;
+    if (job.employer_id === userId) {
+      candidateId = requestedCandidate;
+      if (!candidateId) throw httpError(400, 'Потрібен candidateId');
+      const application = db.prepare(
+        'SELECT id FROM applications WHERE job_id = ? AND user_id = ?'
+      ).get(job.id, candidateId);
+      if (!application) throw httpError(403, 'Кандидат не відгукувався на цю вакансію');
+    } else {
+      if (requestedCandidate && requestedCandidate !== userId) {
+        throw httpError(403, 'Немає доступу до цього чату');
+      }
+      if (job.status !== 'active') throw httpError(400, 'Вакансія недоступна для чату');
+    }
+
+    if (candidateId === job.employer_id) throw httpError(400, 'Не можна відкрити чат із собою');
+    const conversation = getOrCreateConversation(job, candidateId);
+    if (!conversation) throw httpError(400, 'Не вдалося створити чат');
+    send(res, 200, conversationJson(conversation, userId));
+    return;
+  }
+
+  const conversationMessagesMatch = pathname.match(/^\/v1\/conversations\/([^/]+)\/messages$/);
+  if (conversationMessagesMatch && method === 'GET') {
+    const conversationId = decodeURIComponent(conversationMessagesMatch[1]);
+    const userId = req.user.id;
+    const conversation = getConversationRow(conversationId);
+    if (!conversation) throw httpError(404, 'Чат не знайдено');
+    if (!canAccessConversation(userId, conversation)) throw httpError(403, 'Немає доступу до цього чату');
+
+    const rows = db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
+    ).all(conversationId);
+    send(res, 200, rows.map(messageJson));
+    return;
+  }
+
+  if (conversationMessagesMatch && method === 'POST') {
+    const conversationId = decodeURIComponent(conversationMessagesMatch[1]);
+    const body = await readJson(req);
+    const userId = req.user.id;
+    const text = str(body.text).slice(0, 2000);
+    if (!text) throw httpError(400, 'Повідомлення не може бути порожнім');
+
+    const conversation = getConversationRow(conversationId);
+    if (!conversation) throw httpError(404, 'Чат не знайдено');
+    if (!canAccessConversation(userId, conversation)) throw httpError(403, 'Немає доступу до цього чату');
+
+    const job = getJobRow(conversation.job_id);
+    const candidate = db.prepare('SELECT * FROM users WHERE id = ?').get(conversation.candidate_id);
+    const role = userId === conversation.candidate_id ? 'seeker' : 'employer';
+    const senderName = role === 'seeker'
+      ? ((candidate && candidate.name) || 'Кандидат')
+      : ((job && job.company_name) || 'Роботодавець');
+    const messageId = newId('msg');
+    const createdAt = nowIso();
+
+    db.prepare(
+      `INSERT INTO messages
+        (id, application_id, conversation_id, sender_id, sender_role, sender_name, text, created_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`
+    ).run(messageId, conversationId, userId, role, senderName, text, createdAt);
+    db.prepare('UPDATE conversations SET last_message_at = ? WHERE id = ?').run(createdAt, conversationId);
+
+    const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    const recipient = role === 'seeker' ? conversation.employer_id : conversation.candidate_id;
+    sendPush(recipient, 'Нове повідомлення', text.slice(0, 120), {
+      type: 'chat',
+      conversationId,
+    }).catch((error) => console.error('Push failed:', error.message));
+
+    send(res, 201, messageJson(message));
     return;
   }
 

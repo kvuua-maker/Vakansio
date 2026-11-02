@@ -306,9 +306,10 @@ struct CandidateDetailSheet: View {
     private var chatLink: some View {
         NavigationLink {
             ChatView(
-                applicationId: application.id,
+                conversationId: application.conversationId,
                 title: application.vacancy.title,
-                counterpartyName: application.candidateName.isEmpty ? "Кандидат" : application.candidateName
+                counterpartyName: application.candidateName.isEmpty ? "Кандидат" : application.candidateName,
+                counterpartId: application.userId
             )
         } label: {
             HStack(spacing: 12) {
