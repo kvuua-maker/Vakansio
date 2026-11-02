@@ -14,6 +14,7 @@ const crypto = require('node:crypto');
 const http2 = require('node:http2');
 const { DatabaseSync } = require('node:sqlite');
 const { seedDatabase } = require('./seed-data');
+const { ensureContentJobs } = require('./content-jobs');
 const { signJwt, verifyJwt, verifyAppleIdentityToken } = require('./auth');
 const { verifyAppStoreJws } = require('./appstore');
 
@@ -2766,6 +2767,8 @@ async function importExternalJobs() {
 
 seedDatabase(db);
 ensureMatchVersion();
+const contentInserted = ensureContentJobs(db);
+if (contentInserted > 0) console.log(`Inserted ${contentInserted} production content jobs`);
 importExternalJobs().catch((error) => console.warn('External jobs import failed:', error.message));
 setInterval(() => {
   importExternalJobs().catch((error) => console.warn('External jobs refresh failed:', error.message));
