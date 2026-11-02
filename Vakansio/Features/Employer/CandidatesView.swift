@@ -194,6 +194,7 @@ struct CandidateDetailSheet: View {
                         coverLetterCard
                     }
 
+                    chatLink
                     actions
                 }
                 .padding(16)
@@ -306,6 +307,44 @@ struct CandidateDetailSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .vkCard()
+    }
+
+    private var chatLink: some View {
+        NavigationLink {
+            ChatView(
+                applicationId: application.id,
+                title: application.vacancy.title,
+                counterpartyName: application.candidateName.isEmpty ? "Кандидат" : application.candidateName
+            )
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(VK.brand)
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Чат з кандидатом")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(VK.textPrimary)
+                    Text("Уточніть деталі та домовтеся про співбесіду")
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VK.textTertiary)
+            }
+            .vkCard()
+        }
+        .buttonStyle(.plain)
     }
 
     private var actions: some View {

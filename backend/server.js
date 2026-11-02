@@ -11,12 +11,25 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const http2 = require('node:http2');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = Number(process.env.PORT || 8090);
 const HOST = process.env.HOST || '127.0.0.1';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || '';
 const DB_PATH = process.env.DB_PATH || '/opt/vakansio/vakansio.db';
+
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions';
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+
+const APNS_KEY_ID = process.env.APNS_KEY_ID || '';
+const APNS_TEAM_ID = process.env.APNS_TEAM_ID || '9V5XXDXF3N';
+const APNS_KEY_PATH = process.env.APNS_KEY_PATH || '/opt/vakansio/apns.p8';
+const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || 'com.kvuua.vakansio';
+const APNS_HOST = (process.env.APNS_ENV || 'production') === 'sandbox'
+  ? 'https://api.sandbox.push.apple.com'
+  : 'https://api.push.apple.com';
 
 if (!INTERNAL_TOKEN) {
   console.error('INTERNAL_TOKEN is not set');
@@ -85,6 +98,51 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_applications_job ON applications(job_id);
   CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 `);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS match_scores (
+    user_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    score INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'heuristic',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, job_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    application_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_role TEXT NOT NULL,
+    sender_name TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(application_id) REFERENCES applications(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS devices (
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'ios',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, token)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_messages_application ON messages(application_id);
+  CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+`);
+
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn('jobs', 'company_edrpou', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('jobs', 'company_verified', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('jobs', 'ai_verified', 'INTEGER NOT NULL DEFAULT 1');
 
 // ---------- helpers ----------
 
@@ -212,6 +270,14 @@ function jobJson(row) {
     contactEmail: row.contact_email,
     status: row.status,
     verified: Boolean(row.verified),
+    companyEdrpou: row.company_edrpou || '',
+    companyVerified: Boolean(row.company_verified),
+    aiVerified: Boolean(row.ai_verified ?? 1),
+    matchScore: row.match_score === undefined || row.match_score === null
+      ? undefined
+      : Number(row.match_score),
+    matchReason: row.match_reason || undefined,
+    matchSource: row.match_source || undefined,
     applicationsCount: Number(row.applications_count || 0),
     createdAt: row.created_at,
   };
@@ -328,6 +394,372 @@ function scoreApplication(jobRow, resumeText) {
   return { score, summary };
 }
 
+// ---------- DeepSeek AI matching ----------
+
+function stripCodeFences(value) {
+  return String(value || '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+async function deepseekJson(system, user, maxTokens = 900) {
+  if (!DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY is not set');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+
+  try {
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        max_tokens: maxTokens,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DeepSeek HTTP ${response.status}: ${errorText.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content || '';
+    return JSON.parse(stripCodeFences(content));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function resumeForUser(user) {
+  if (!user) return '';
+  return [user.headline, user.about, user.skills, user.city]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function heuristicMatch(job, resumeText) {
+  const result = scoreApplication(job, resumeText);
+  return { score: result.score, reason: result.summary, source: 'heuristic' };
+}
+
+async function deepseekMatchScores(jobs, resumeText) {
+  const payload = jobs.slice(0, 10).map((job) => ({
+    jobId: job.id,
+    title: job.title,
+    company: job.company_name,
+    description: String(job.description || '').slice(0, 500),
+    requirements: parseArray(job.requirements).join('; ').slice(0, 300),
+  }));
+
+  const system = [
+    'Ти — senior IT-рекрутер і движок матчингу вакансій.',
+    'Порівняй резюме кандидата з кожною вакансією.',
+    'Поверни СУВОРО валідний JSON без markdown:',
+    '{"matches":[{"jobId":"...","score":0,"reason":"..."}]}',
+    'score — ціле 0..100, reason — українською, до 140 символів.',
+    'Оцінюй релевантність навичок, досвіду та міста. Не вигадуй jobId.',
+  ].join(' ');
+
+  const user = `РЕЗЮМЕ КАНДИДАТА:\n${resumeText.slice(0, 2000)}\n\nВАКАНСІЇ:\n${JSON.stringify(payload)}`;
+  const data = await deepseekJson(system, user, 1200);
+  const matches = Array.isArray(data?.matches) ? data.matches : [];
+  const byId = new Map(jobs.map((job) => [job.id, job]));
+  const result = new Map();
+
+  for (const item of matches) {
+    const jobId = str(item?.jobId);
+    if (!byId.has(jobId)) continue;
+    const score = Math.max(0, Math.min(100, int(item?.score, 0)));
+    const reason = str(item?.reason).slice(0, 180) || 'Оцінка AI-матчингу';
+    result.set(jobId, { score, reason, source: 'deepseek' });
+  }
+
+  if (result.size === 0) throw new Error('DeepSeek returned no matches');
+  return result;
+}
+
+function upsertMatchScore(userId, jobId, match) {
+  db.prepare(
+    `INSERT INTO match_scores (user_id, job_id, score, reason, source, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, job_id) DO UPDATE SET
+       score = excluded.score,
+       reason = excluded.reason,
+       source = excluded.source,
+       updated_at = excluded.updated_at`
+  ).run(userId, jobId, match.score, match.reason, match.source, nowIso());
+}
+
+async function recommendedJobsFor(userId) {
+  approvePendingJobs();
+
+  const jobs = db.prepare(
+    `SELECT j.*,
+       (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applications_count
+     FROM jobs j WHERE j.status = 'active' ORDER BY j.created_at DESC`
+  ).all();
+
+  if (!jobs.length) return [];
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const resumeText = resumeForUser(user);
+
+  if (!resumeText) {
+    return jobs.map((job) => ({
+      ...jobJson(job),
+      matchScore: 0,
+      matchReason: 'Заповніть резюме, щоб отримати AI-матчинг',
+      matchSource: 'none',
+    }));
+  }
+
+  const cachedRows = db.prepare('SELECT * FROM match_scores WHERE user_id = ?').all(userId);
+  const cached = new Map(cachedRows.map((row) => [row.job_id, row]));
+  const fresh = jobs.every((job) => {
+    const row = cached.get(job.id);
+    if (!row) return false;
+    const updated = Date.parse(row.updated_at);
+    return Number.isFinite(updated) && Date.now() - updated < 10 * 60 * 1000;
+  });
+
+  let scores = new Map();
+
+  if (fresh) {
+    for (const job of jobs) {
+      const row = cached.get(job.id);
+      scores.set(job.id, { score: row.score, reason: row.reason, source: row.source });
+    }
+  } else {
+    try {
+      scores = await deepseekMatchScores(jobs, resumeText);
+    } catch (error) {
+      console.error('DeepSeek matching failed, using heuristic:', error.message);
+      scores = new Map();
+    }
+
+    for (const job of jobs) {
+      if (!scores.has(job.id)) {
+        scores.set(job.id, heuristicMatch(job, resumeText));
+      }
+      upsertMatchScore(userId, job.id, scores.get(job.id));
+    }
+  }
+
+  return jobs
+    .map((job) => {
+      const match = scores.get(job.id) || heuristicMatch(job, resumeText);
+      return {
+        ...jobJson(job),
+        matchScore: match.score,
+        matchReason: match.reason,
+        matchSource: match.source,
+      };
+    })
+    .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+}
+
+async function generateResume(answers) {
+  const position = str(answers?.position);
+  const experience = str(answers?.experience);
+  const skills = str(answers?.skills);
+  const achievements = str(answers?.achievements);
+  const location = str(answers?.location);
+
+  const system = [
+    'Ти — кар’єрний коуч і редактор резюме.',
+    'На основі 5 відповідей кандидата створи стисле професійне резюме українською.',
+    'Поверни СУВОРО валідний JSON без markdown:',
+    '{"headline":"...","about":"...","skills":"...","city":"..."}',
+    'headline — посада (до 60 символів), about — 3-5 речень про досвід і досягнення (до 900 символів),',
+    'skills — через кому (до 200 символів), city — місто/формат роботи.',
+    'Не вигадуй фактів, яких немає у відповідях.',
+  ].join(' ');
+
+  const user = JSON.stringify({ position, experience, skills, achievements, location });
+
+  try {
+    const data = await deepseekJson(system, user, 900);
+    return {
+      headline: (str(data.headline) || position || 'Фахівець').slice(0, 120),
+      about: (str(data.about) || [experience, achievements].filter(Boolean).join('. ')).slice(0, 1500),
+      skills: (str(data.skills) || skills).slice(0, 400),
+      city: (str(data.city) || location || 'Київ').slice(0, 80),
+      source: 'deepseek',
+    };
+  } catch (error) {
+    console.error('DeepSeek resume generation failed, using fallback:', error.message);
+    return {
+      headline: (position || 'Фахівець').slice(0, 120),
+      about: [
+        experience ? `Досвід: ${experience}.` : '',
+        achievements ? `Досягнення: ${achievements}.` : '',
+        'Швидко навчаюся та орієнтований на результат.',
+      ].filter(Boolean).join(' ').slice(0, 1500),
+      skills: (skills || 'Комунікація, командна робота').slice(0, 400),
+      city: (location || 'Київ').slice(0, 80),
+      source: 'fallback',
+    };
+  }
+}
+
+// ---------- messages, devices, APNs ----------
+
+function messageJson(row) {
+  return {
+    id: row.id,
+    applicationId: row.application_id,
+    senderId: row.sender_id,
+    senderRole: row.sender_role,
+    senderName: row.sender_name,
+    text: row.text,
+    createdAt: row.created_at,
+  };
+}
+
+function getApplicationContext(applicationId) {
+  const application = getApplicationRow(applicationId);
+  if (!application) return null;
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(application.job_id);
+  if (!job) return null;
+  return { application, job };
+}
+
+function canAccessApplication(userId, application, job) {
+  return userId === application.user_id || userId === job.employer_id;
+}
+
+let apnsKeyCache = null;
+let apnsJwtCache = { token: '', createdAt: 0 };
+
+function getApnsKey() {
+  if (apnsKeyCache) return apnsKeyCache;
+  if (!APNS_KEY_ID) return null;
+  try {
+    apnsKeyCache = fs.readFileSync(APNS_KEY_PATH, 'utf8');
+    return apnsKeyCache;
+  } catch (error) {
+    console.error('APNs key unavailable:', error.message);
+    return null;
+  }
+}
+
+function apnsJwt() {
+  if (apnsJwtCache.token && Date.now() - apnsJwtCache.createdAt < 50 * 60 * 1000) {
+    return apnsJwtCache.token;
+  }
+
+  const key = getApnsKey();
+  if (!key) return '';
+
+  const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid: APNS_KEY_ID })).toString('base64url');
+  const claims = Buffer.from(JSON.stringify({
+    iss: APNS_TEAM_ID,
+    iat: Math.floor(Date.now() / 1000),
+  })).toString('base64url');
+  const input = `${header}.${claims}`;
+  const signature = crypto.sign('sha256', Buffer.from(input), {
+    key,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64url');
+
+  apnsJwtCache = { token: `${input}.${signature}`, createdAt: Date.now() };
+  return apnsJwtCache.token;
+}
+
+function sendApns(token, payload) {
+  return new Promise((resolve) => {
+    const client = http2.connect(APNS_HOST);
+    let status = 0;
+    let body = '';
+
+    client.on('error', (error) => {
+      console.error('APNs connection error:', error.message);
+      resolve({ ok: false, status: 0 });
+    });
+
+    const req = client.request({
+      ':method': 'POST',
+      ':path': `/3/device/${token}`,
+      authorization: `bearer ${apnsJwt()}`,
+      'apns-topic': APNS_BUNDLE_ID,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'content-type': 'application/json',
+    });
+
+    req.on('response', (headers) => {
+      status = Number(headers[':status'] || 0);
+    });
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      client.close();
+      if (status !== 200) {
+        console.error(`APNs ${status}: ${body.slice(0, 200)}`);
+      }
+      resolve({ ok: status === 200, status });
+    });
+    req.on('error', (error) => {
+      console.error('APNs request error:', error.message);
+      client.close();
+      resolve({ ok: false, status: 0 });
+    });
+
+    req.end(JSON.stringify(payload));
+  });
+}
+
+async function sendPush(userId, title, body, data = {}) {
+  if (!getApnsKey()) return;
+
+  const tokens = db.prepare('SELECT token FROM devices WHERE user_id = ?').all(userId);
+  if (!tokens.length) return;
+
+  const payload = {
+    aps: {
+      alert: { title, body },
+      sound: 'default',
+      badge: 1,
+    },
+    ...data,
+  };
+
+  for (const row of tokens) {
+    const result = await sendApns(row.token, payload);
+    if (result.status === 410) {
+      db.prepare('DELETE FROM devices WHERE user_id = ? AND token = ?').run(userId, row.token);
+    }
+  }
+}
+
+function pushStatusChange(userId, jobTitle, status, applicationId) {
+  const titles = {
+    sent: 'Надіслано',
+    viewed: 'Переглянуто',
+    invited: 'Запрошення на співбесіду',
+    rejected: 'Відмова',
+  };
+
+  sendPush(
+    userId,
+    'Статус відгуку',
+    `«${jobTitle}» — ${titles[status] || status}`,
+    { type: 'status', applicationId, status }
+  ).catch((error) => console.error('Push failed:', error.message));
+}
+
 // ---------- moderation ----------
 
 function approvePendingJobs() {
@@ -343,6 +775,25 @@ function approvePendingJobs() {
 }
 
 // ---------- seed ----------
+
+const COMPANY_EDRPOU = {
+  'Nova Tech': '41123456',
+  'Kolo Studio': '43219876',
+  'Sich Labs': '44556677',
+  'Harniy Market': '40112233',
+  'Orbita Analytics': '42334455',
+};
+
+function backfillCompanyVerification() {
+  const update = db.prepare(
+    `UPDATE jobs
+     SET company_verified = 1, company_edrpou = ?, ai_verified = 1
+     WHERE company_name = ? AND verified = 1`
+  );
+  for (const [name, edrpou] of Object.entries(COMPANY_EDRPOU)) {
+    update.run(edrpou, name);
+  }
+}
 
 function seedIfEmpty() {
   const count = Number(db.prepare('SELECT COUNT(*) AS count FROM jobs').get().count || 0);
@@ -518,6 +969,25 @@ async function handle(req, res) {
 
   if ((req.headers['x-internal-token'] || '') !== INTERNAL_TOKEN) {
     send(res, 401, { error: 'Невірний або відсутній x-internal-token' });
+    return;
+  }
+
+  // AI-recommended jobs
+  if (pathname === '/v1/jobs/recommended' && method === 'GET') {
+    const userId = str(url.searchParams.get('userId'));
+    if (!userId) throw httpError(400, 'Не вказано userId');
+    const jobs = await recommendedJobsFor(userId);
+    send(res, 200, jobs);
+    return;
+  }
+
+  // AI resume generation
+  if (pathname === '/v1/resume/generate' && method === 'POST') {
+    const body = await readJson(req);
+    const userId = str(body.userId);
+    if (!userId) throw httpError(400, 'Не вказано userId');
+    const resume = await generateResume(body.answers || {});
+    send(res, 200, resume);
     return;
   }
 
@@ -760,7 +1230,85 @@ async function handle(req, res) {
     if (!job || job.employer_id !== employerId) throw httpError(403, 'Немає доступу до цього відгуку');
 
     db.prepare('UPDATE applications SET status = ? WHERE id = ?').run(status, application.id);
-    send(res, 200, applicationJson(getApplicationRow(application.id), getJobRow(job.id)));
+    const updatedApplication = getApplicationRow(application.id);
+    send(res, 200, applicationJson(updatedApplication, getJobRow(job.id)));
+    pushStatusChange(updatedApplication.user_id, job.title, status, updatedApplication.id);
+    return;
+  }
+
+  // Chat messages
+  if (pathname === '/v1/messages' && method === 'GET') {
+    const applicationId = str(url.searchParams.get('applicationId'));
+    const userId = str(url.searchParams.get('userId'));
+    if (!applicationId || !userId) throw httpError(400, 'Потрібні applicationId та userId');
+
+    const context = getApplicationContext(applicationId);
+    if (!context) throw httpError(404, 'Відгук не знайдено');
+    if (!canAccessApplication(userId, context.application, context.job)) {
+      throw httpError(403, 'Немає доступу до цього чату');
+    }
+
+    const rows = db
+      .prepare('SELECT * FROM messages WHERE application_id = ? ORDER BY created_at ASC')
+      .all(applicationId);
+    send(res, 200, rows.map(messageJson));
+    return;
+  }
+
+  if (pathname === '/v1/messages' && method === 'POST') {
+    const body = await readJson(req);
+    const applicationId = str(body.applicationId);
+    const userId = str(body.userId);
+    const text = str(body.text).slice(0, 2000);
+    if (!applicationId || !userId || !text) {
+      throw httpError(400, 'Потрібні applicationId, userId і text');
+    }
+
+    const context = getApplicationContext(applicationId);
+    if (!context) throw httpError(404, 'Відгук не знайдено');
+    if (!canAccessApplication(userId, context.application, context.job)) {
+      throw httpError(403, 'Немає доступу до цього чату');
+    }
+
+    const role = userId === context.application.user_id ? 'seeker' : 'employer';
+    const senderName = role === 'seeker'
+      ? (context.application.name || 'Кандидат')
+      : (context.job.company_name || 'Роботодавець');
+    const messageId = newId('msg');
+    const createdAt = nowIso();
+
+    db.prepare(
+      `INSERT INTO messages (id, application_id, sender_id, sender_role, sender_name, text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(messageId, applicationId, userId, role, senderName, text, createdAt);
+
+    const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    const recipient = role === 'seeker' ? context.job.employer_id : context.application.user_id;
+    sendPush(recipient, 'Нове повідомлення', text.slice(0, 120), {
+      type: 'chat',
+      applicationId,
+    }).catch((error) => console.error('Push failed:', error.message));
+
+    send(res, 201, messageJson(message));
+    return;
+  }
+
+  // Push device registration
+  if (pathname === '/v1/devices' && method === 'POST') {
+    const body = await readJson(req);
+    const userId = str(body.userId);
+    const token = str(body.token);
+    if (!userId || token.length < 32) throw httpError(400, 'Потрібні userId і token');
+
+    db.prepare(
+      `INSERT INTO devices (user_id, token, platform, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, token) DO UPDATE SET
+         platform = excluded.platform,
+         updated_at = excluded.updated_at`
+    ).run(userId, token, str(body.platform) || 'ios', nowIso());
+
+    send(res, 200, { ok: true });
     return;
   }
 
@@ -805,6 +1353,7 @@ async function handle(req, res) {
          city = excluded.city`
     ).run(userId, name, email, photo, headline, about, skills, city, createdAt);
 
+    db.prepare('DELETE FROM match_scores WHERE user_id = ?').run(userId);
     send(res, 200, profileJson(db.prepare('SELECT * FROM users WHERE id = ?').get(userId)));
     return;
   }
@@ -820,6 +1369,8 @@ async function handle(req, res) {
          WHERE user_id = ? OR job_id IN (SELECT id FROM jobs WHERE employer_id = ?)`
       ).run(userId, userId);
       db.prepare('DELETE FROM jobs WHERE employer_id = ?').run(userId);
+      db.prepare('DELETE FROM devices WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM match_scores WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM users WHERE id = ?').run(userId);
       db.exec('COMMIT');
     } catch (error) {
@@ -851,6 +1402,7 @@ const server = http.createServer((req, res) => {
 });
 
 seedIfEmpty();
+backfillCompanyVerification();
 approvePendingJobs();
 setInterval(approvePendingJobs, 30 * 1000).unref();
 

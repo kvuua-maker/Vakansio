@@ -21,8 +21,9 @@ struct FeedView: View {
     }
 
     private var filteredVacancies: [Vacancy] {
-        guard selectedCategory != "Усі" else { return app.jobs }
-        return app.jobs.filter { $0.category == selectedCategory }
+        let sorted = app.jobs.sorted { ($0.matchScore ?? 0) > ($1.matchScore ?? 0) }
+        guard selectedCategory != "Усі" else { return sorted }
+        return sorted.filter { $0.category == selectedCategory }
     }
 
     private var greeting: String {
@@ -85,7 +86,7 @@ struct FeedView: View {
                     .padding(.bottom, 28)
                 }
                 .refreshable {
-                    await app.loadJobs()
+                    await app.loadRecommendedJobs()
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -95,7 +96,7 @@ struct FeedView: View {
         }
         .task {
             if app.jobs.isEmpty {
-                await app.loadJobs()
+                await app.loadRecommendedJobs()
             }
         }
     }
@@ -176,7 +177,7 @@ struct FeedView: View {
                 message: error,
                 actionTitle: "Спробувати ще",
                 action: {
-                    Task { await app.loadJobs() }
+                    Task { await app.loadRecommendedJobs() }
                 }
             )
             .vkCard()
@@ -187,7 +188,7 @@ struct FeedView: View {
                 message: "Роботодавці ще не опублікували активні вакансії. Оновіть стрічку трохи пізніше.",
                 actionTitle: "Оновити",
                 action: {
-                    Task { await app.loadJobs() }
+                    Task { await app.loadRecommendedJobs() }
                 }
             )
             .vkCard()

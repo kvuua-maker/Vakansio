@@ -654,3 +654,62 @@ struct AIScoreBadge: View {
         .background(tint.opacity(0.12), in: Capsule())
     }
 }
+
+// MARK: - Trust & matching
+
+struct MatchBadge: View {
+    let score: Int
+    var compact: Bool = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "sparkles")
+                .font(.system(size: compact ? 9 : 10, weight: .bold))
+            Text("\(score)% Match")
+                .font(.system(size: compact ? 10 : 11, weight: .bold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color.white)
+        .padding(.horizontal, compact ? 7 : 8)
+        .padding(.vertical, compact ? 3 : 4)
+        .background(VK.success, in: Capsule())
+        .accessibilityLabel("Відповідність \(score) відсотків")
+    }
+}
+
+struct AIVerifiedBadge: View {
+    var compact: Bool = true
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: compact ? 9 : 11, weight: .semibold))
+            Text("Перевірено ШІ")
+                .font(.system(size: compact ? 9 : 11, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(VK.brand)
+        .padding(.horizontal, compact ? 6 : 8)
+        .padding(.vertical, compact ? 3 : 4)
+        .background(VK.brand.opacity(0.10), in: Capsule())
+    }
+}
+
+struct VerifiedEmployerBadge: View {
+    var compact: Bool = true
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: compact ? 9 : 11, weight: .semibold))
+            Text("Перевірений роботодавець")
+                .font(.system(size: compact ? 9 : 11, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(VK.success)
+        .padding(.horizontal, compact ? 6 : 8)
+        .padding(.vertical, compact ? 3 : 4)
+        .background(VK.success.opacity(0.12), in: Capsule())
+    }
+}

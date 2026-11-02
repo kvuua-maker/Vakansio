@@ -19,6 +19,7 @@ struct ProfileView: View {
     private enum ProfileSheet: String, Identifiable {
         case resumeEditor
         case resumePreview
+        case aiWizard
         case paywall
         case help
 
@@ -88,6 +89,8 @@ struct ProfileView: View {
             ResumeEditorSheet()
         case .resumePreview:
             ResumePreviewSheet()
+        case .aiWizard:
+            AIResumeWizardView()
         case .paywall:
             PaywallView(isModal: true)
         case .help:
@@ -218,6 +221,8 @@ struct ProfileView: View {
         VStack(spacing: 12) {
             SectionHeader(title: "Моє резюме")
 
+            aiResumeCTA
+
             HStack(spacing: 14) {
                 resumeRing
 
@@ -293,6 +298,47 @@ struct ProfileView: View {
                 }
             }
         }
+    }
+
+    private var aiResumeCTA: some View {
+        Button {
+            activeSheet = .aiWizard
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Створити резюме за 1 хвилину")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.white)
+
+                    Text("AI поставить 5 питань і напише текст")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.8))
+            }
+            .padding(16)
+            .background(
+                VK.brandGradient,
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .shadow(color: VK.brand.opacity(0.18), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(.plain)
     }
 
     private var resumeRing: some View {
@@ -685,6 +731,7 @@ struct ProfileView: View {
 
     // MARK: Photo / PDF
 
+    @MainActor
     private func handlePhoto(_ item: PhotosPickerItem?) async {
         guard let item else { return }
 
@@ -710,6 +757,7 @@ struct ProfileView: View {
         }
     }
 
+    @MainActor
     private func handlePDF(_ result: Result<URL, Error>) async {
         switch result {
         case .success(let url):

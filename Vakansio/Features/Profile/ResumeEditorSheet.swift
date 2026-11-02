@@ -95,7 +95,7 @@ struct ResumeEditorSheet: View {
         guard canSave else { return }
         isSaving = true
 
-        Task {
+        Task { @MainActor in
             let saved = await app.updateResume(
                 headline: headline.vkTrimmed,
                 about: about.vkTrimmed,

@@ -73,6 +73,55 @@ struct APIClient {
         return dtos.map { $0.toModel() }
     }
 
+    func fetchRecommendedJobs(userId: String) async throws -> [Vacancy] {
+        let dtos: [JobDTO] = try await get(
+            path: "/v1/jobs/recommended",
+            query: [URLQueryItem(name: "userId", value: userId)]
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func generateResume(userId: String, answers: AIResumeAnswers) async throws -> GeneratedResume {
+        let body = GenerateResumeRequest(
+            userId: userId,
+            answers: ResumeAnswersPayload(
+                position: answers.position,
+                experience: answers.experience,
+                skills: answers.skills,
+                achievements: answers.achievements,
+                location: answers.location
+            )
+        )
+        let dto: GeneratedResumeDTO = try await post(path: "/v1/resume/generate", body: body)
+        return dto.toModel()
+    }
+
+    func fetchMessages(applicationId: String, userId: String) async throws -> [ChatMessage] {
+        let dtos: [ChatMessageDTO] = try await get(
+            path: "/v1/messages",
+            query: [
+                URLQueryItem(name: "applicationId", value: applicationId),
+                URLQueryItem(name: "userId", value: userId)
+            ]
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func sendMessage(applicationId: String, userId: String, text: String) async throws -> ChatMessage {
+        let dto: ChatMessageDTO = try await post(
+            path: "/v1/messages",
+            body: ChatMessageRequest(applicationId: applicationId, userId: userId, text: text)
+        )
+        return dto.toModel()
+    }
+
+    func registerDevice(userId: String, token: String) async throws {
+        let _: OKResponse = try await post(
+            path: "/v1/devices",
+            body: DeviceRequest(userId: userId, token: token, platform: "ios")
+        )
+    }
+
     func fetchEmployerJobs(employerId: String) async throws -> [Vacancy] {
         let dtos: [JobDTO] = try await get(
             path: "/v1/jobs/employer",
@@ -320,13 +369,21 @@ struct JobDTO: Decodable {
     let status: String?
     let verified: Bool?
     let applicationsCount: Int?
+    let companyEdrpou: String?
+    let companyVerified: Bool?
+    let aiVerified: Bool?
+    let matchScore: Int?
+    let matchReason: String?
+    let matchSource: String?
     let createdAt: String?
 
     func toModel() -> Vacancy {
+        let edrpou = (companyEdrpou ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let company = Company(
             name: companyName ?? "Компанія",
-            isVerified: verified ?? false,
-            industry: category ?? "IT"
+            isVerified: companyVerified ?? verified ?? false,
+            industry: category ?? "IT",
+            edrpou: edrpou.isEmpty ? nil : edrpou
         )
         let salaryMin = self.salaryMin ?? 0
         let salaryMax = self.salaryMax ?? 0
@@ -355,7 +412,11 @@ struct JobDTO: Decodable {
             isVerified: verified ?? false,
             isUrgent: false,
             status: JobStatus(rawValue: status ?? "active") ?? .active,
-            applicationsCount: applicationsCount ?? 0
+            applicationsCount: applicationsCount ?? 0,
+            aiVerified: aiVerified ?? true,
+            matchScore: matchScore,
+            matchReason: matchReason,
+            matchSource: matchSource
         )
     }
 }
@@ -426,5 +487,77 @@ enum APIDateParser {
 
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
+    }
+}
+
+
+// MARK: - AI / chat requests
+
+struct GenerateResumeRequest: Encodable {
+    let userId: String
+    let answers: ResumeAnswersPayload
+}
+
+struct ResumeAnswersPayload: Encodable {
+    let position: String
+    let experience: String
+    let skills: String
+    let achievements: String
+    let location: String
+}
+
+private struct ChatMessageRequest: Encodable {
+    let applicationId: String
+    let userId: String
+    let text: String
+}
+
+private struct DeviceRequest: Encodable {
+    let userId: String
+    let token: String
+    let platform: String
+}
+
+private struct OKResponse: Decodable {
+    let ok: Bool?
+}
+
+struct GeneratedResumeDTO: Decodable {
+    let headline: String?
+    let about: String?
+    let skills: String?
+    let city: String?
+    let source: String?
+
+    func toModel() -> GeneratedResume {
+        GeneratedResume(
+            headline: headline ?? "",
+            about: about ?? "",
+            skills: skills ?? "",
+            city: city ?? "",
+            source: source ?? "fallback"
+        )
+    }
+}
+
+struct ChatMessageDTO: Decodable {
+    let id: String
+    let applicationId: String?
+    let senderId: String?
+    let senderRole: String?
+    let senderName: String?
+    let text: String?
+    let createdAt: String?
+
+    func toModel() -> ChatMessage {
+        ChatMessage(
+            id: id,
+            applicationId: applicationId ?? "",
+            senderId: senderId ?? "",
+            senderRole: senderRole ?? "seeker",
+            senderName: senderName ?? "",
+            text: text ?? "",
+            createdAt: APIDateParser.date(from: createdAt) ?? Date()
+        )
     }
 }

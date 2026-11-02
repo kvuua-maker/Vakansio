@@ -6,7 +6,8 @@ struct VacancyDetailView: View {
     @EnvironmentObject private var app: AppState
     let vacancy: Vacancy
 
-    @State private var showApplySheet = false
+    @State private var isApplying = false
+    @State private var showAppliedAlert = false
 
     private var isSaved: Bool {
         app.isSaved(vacancy)
@@ -24,6 +25,9 @@ struct VacancyDetailView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 hero
+                if let score = vacancy.matchScore, score > 0 {
+                    matchCard(score: score)
+                }
                 metaGrid
                 descriptionCard
                 bulletCard(title: "Обов'язки", icon: "checklist", items: vacancy.responsibilities)
@@ -62,8 +66,10 @@ struct VacancyDetailView: View {
         .safeAreaInset(edge: .bottom) {
             bottomBar
         }
-        .sheet(isPresented: $showApplySheet) {
-            ApplySheet(vacancy: vacancy)
+        .alert("Відгук надіслано!", isPresented: $showAppliedAlert) {
+            Button("Добре") { }
+        } message: {
+            Text("Роботодавець отримав ваше збережене резюме та фото.")
         }
     }
 
@@ -74,18 +80,25 @@ struct VacancyDetailView: View {
             HStack(alignment: .center, spacing: 12) {
                 CompanyAvatar(initials: vacancy.company.initials, size: 58)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(vacancy.company.name)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(VK.textSecondary)
 
                     HStack(spacing: 6) {
-                        if vacancy.company.isVerified {
-                            VerifiedBadge()
+                        if vacancy.company.isVerified,
+                           let edrpou = vacancy.company.edrpou,
+                           !edrpou.isEmpty {
+                            VerifiedEmployerBadge(compact: false)
                         }
-                        if vacancy.isUrgent {
-                            TagPill(text: "Терміново", icon: "flame.fill", tint: VK.danger)
+
+                        if vacancy.aiVerified {
+                            AIVerifiedBadge(compact: false)
                         }
+                    }
+
+                    if vacancy.isUrgent {
+                        TagPill(text: "Терміново", icon: "flame.fill", tint: VK.danger)
                     }
                 }
 
@@ -122,6 +135,32 @@ struct VacancyDetailView: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(VK.hairline, lineWidth: 1)
         )
+    }
+
+    private func matchCard(score: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+
+                Text("AI-матчинг")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(VK.textPrimary)
+
+                Spacer()
+
+                MatchBadge(score: score)
+            }
+
+            if let reason = vacancy.matchReason, !reason.isEmpty {
+                Text(reason)
+                    .font(.system(size: 12))
+                    .foregroundStyle(VK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .vkCard(padding: 14)
     }
 
     // MARK: Meta
@@ -336,12 +375,20 @@ struct VacancyDetailView: View {
                     .background(VK.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     Button {
-                        showApplySheet = true
+                        quickApply()
                     } label: {
                         HStack(spacing: 7) {
-                            Image(systemName: "paperplane.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("Відгукнутися")
+                            if isApplying {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .tint(Color.white)
+                                    .scaleEffect(0.9)
+                            } else {
+                                Image(systemName: "paperplane.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+
+                            Text(isApplying ? "Надсилаємо…" : "Відгукнутися")
                                 .font(.system(size: 15, weight: .semibold))
                         }
                         .foregroundStyle(Color.white)
@@ -351,8 +398,10 @@ struct VacancyDetailView: View {
                             VK.accentGradient,
                             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                         )
+                        .opacity(isApplying ? 0.75 : 1)
                     }
                     .buttonStyle(PressableButtonStyle())
+                    .disabled(isApplying)
                 }
             }
             .padding(.horizontal, 16)
@@ -360,6 +409,19 @@ struct VacancyDetailView: View {
             .padding(.bottom, 6)
         }
         .background(.regularMaterial)
+    }
+
+    private func quickApply() {
+        guard !isApplying, !app.hasApplied(to: vacancy) else { return }
+        isApplying = true
+
+        Task { @MainActor in
+            let success = await app.apply(to: vacancy, coverLetter: "")
+            isApplying = false
+            if success {
+                showAppliedAlert = true
+            }
+        }
     }
 
     private func appliedBadge(for application: Application) -> some View {

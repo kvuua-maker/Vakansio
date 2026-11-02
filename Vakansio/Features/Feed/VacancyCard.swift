@@ -50,6 +50,12 @@ struct VacancyCard: View {
                             VerifiedBadge(compact: true)
                         }
                     }
+
+                    if vacancy.company.isVerified,
+                       let edrpou = vacancy.company.edrpou,
+                       !edrpou.isEmpty {
+                        VerifiedEmployerBadge(compact: true)
+                    }
                 }
 
                 Spacer(minLength: 30)
@@ -60,13 +66,18 @@ struct VacancyCard: View {
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(VK.brand)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.7)
+
+                if let score = vacancy.matchScore, score > 70 {
+                    MatchBadge(score: score, compact: true)
+                }
 
                 Spacer(minLength: 4)
 
                 Text(vacancy.postedText)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(VK.textTertiary)
+                    .lineLimit(1)
             }
 
             HStack(spacing: 7) {
@@ -101,7 +112,9 @@ struct VacancyCard: View {
                     .foregroundStyle(VK.textSecondary)
                     .lineLimit(1)
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
+
+                AIVerifiedBadge(compact: true)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))

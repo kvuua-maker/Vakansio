@@ -6,8 +6,13 @@ struct SearchView: View {
 
     @State private var path = NavigationPath()
     @State private var query = ""
+    @State private var debouncedQuery = ""
+    @State private var debounceTask: Task<Void, Never>?
     @State private var selectedCity: String? = nil
     @State private var selectedCategory: String? = nil
+    @State private var minSalary: Double = 0
+    @State private var remoteOnly = false
+    @State private var officeOnly = false
     @State private var showFilters = false
     @FocusState private var isSearchFocused: Bool
 
@@ -15,11 +20,23 @@ struct SearchView: View {
         var count = 0
         if selectedCity != nil { count += 1 }
         if selectedCategory != nil { count += 1 }
+        if minSalary > 0 { count += 1 }
+        if remoteOnly { count += 1 }
+        if officeOnly { count += 1 }
         return count
     }
 
+    private var maxSalary: Double {
+        let maximum = app.jobs.map { $0.salaryMax }.max() ?? 0
+        return Double(max(50000, maximum))
+    }
+
+    private var salaryLabel: String {
+        minSalary <= 0 ? "Будь-яка" : "від \(vkFormatMoney(Int(minSalary))) ₴"
+    }
+
     private var results: [Vacancy] {
-        let text = query.vkTrimmed.lowercased()
+        let text = debouncedQuery.vkTrimmed.lowercased()
 
         return app.jobs.filter { vacancy in
             let matchesQuery = text.isEmpty
@@ -33,8 +50,20 @@ struct SearchView: View {
                 || (selectedCity == "Віддалено" && vacancy.isRemote)
 
             let matchesCategory = selectedCategory == nil || vacancy.category == selectedCategory
+            let matchesSalary = minSalary <= 0 || Double(vacancy.salaryMax) >= minSalary
 
-            return matchesQuery && matchesCity && matchesCategory
+            let matchesFormat: Bool
+            if remoteOnly && officeOnly {
+                matchesFormat = true
+            } else if remoteOnly {
+                matchesFormat = vacancy.isRemote
+            } else if officeOnly {
+                matchesFormat = !vacancy.isRemote
+            } else {
+                matchesFormat = true
+            }
+
+            return matchesQuery && matchesCity && matchesCategory && matchesSalary && matchesFormat
         }
     }
 
@@ -48,6 +77,9 @@ struct SearchView: View {
                         header
                         searchRow
                         filterStrip
+                        if !app.jobs.isEmpty {
+                            salaryCard
+                        }
                         activeFilters
                         content
                     }
@@ -78,7 +110,15 @@ struct SearchView: View {
         }
         .task {
             if app.jobs.isEmpty {
-                await app.loadJobs()
+                await app.loadRecommendedJobs()
+            }
+        }
+        .onChange(of: query) { _, newValue in
+            debounceTask?.cancel()
+            debounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
+                debouncedQuery = newValue
             }
         }
     }
@@ -102,6 +142,7 @@ struct SearchView: View {
         HStack(spacing: 10) {
             SearchField(text: $query, focus: $isSearchFocused) {
                 isSearchFocused = false
+                debouncedQuery = query
             }
 
             Button {
@@ -142,6 +183,14 @@ struct SearchView: View {
             HStack(spacing: 8) {
                 cityMenu
 
+                FilterChip(title: "Віддалено", icon: "wifi", isSelected: remoteOnly) {
+                    remoteOnly.toggle()
+                }
+
+                FilterChip(title: "Офіс", icon: "building.2", isSelected: officeOnly) {
+                    officeOnly.toggle()
+                }
+
                 ForEach(FilterOptions.categories, id: \.self) { category in
                     FilterChip(
                         title: category,
@@ -155,6 +204,41 @@ struct SearchView: View {
             }
             .padding(.vertical, 2)
         }
+    }
+
+    private var salaryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Зарплата", systemImage: "banknote")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(VK.textSecondary)
+
+                Spacer()
+
+                Text(salaryLabel)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+            }
+
+            Slider(value: $minSalary, in: 0...maxSalary, step: 5000)
+                .tint(VK.brand)
+
+            HStack {
+                Text("0 ₴")
+                    .font(.system(size: 10))
+                    .foregroundStyle(VK.textTertiary)
+                Spacer()
+                Text("\(vkFormatMoney(Int(maxSalary))) ₴")
+                    .font(.system(size: 10))
+                    .foregroundStyle(VK.textTertiary)
+            }
+        }
+        .padding(12)
+        .background(VK.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(VK.hairline, lineWidth: 1)
+        )
     }
 
     private var cityMenu: some View {
@@ -208,6 +292,9 @@ struct SearchView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         selectedCity = nil
                         selectedCategory = nil
+                        minSalary = 0
+                        remoteOnly = false
+                        officeOnly = false
                     }
                 } label: {
                     Text("Скинути")
@@ -236,7 +323,7 @@ struct SearchView: View {
                 message: app.lastErrorMessage ?? "Вакансії ще не завантажені.",
                 actionTitle: "Спробувати ще",
                 action: {
-                    Task { await app.loadJobs() }
+                    Task { await app.loadRecommendedJobs() }
                 }
             )
             .vkCard()
@@ -263,8 +350,12 @@ struct SearchView: View {
                     action: {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             query = ""
+                            debouncedQuery = ""
                             selectedCity = nil
                             selectedCategory = nil
+                            minSalary = 0
+                            remoteOnly = false
+                            officeOnly = false
                         }
                     }
                 )

@@ -172,6 +172,26 @@ final class AppState: ObservableObject {
         }
     }
 
+    func loadRecommendedJobs() async {
+        guard !isLoadingJobs else { return }
+        isLoadingJobs = true
+        defer { isLoadingJobs = false }
+
+        do {
+            var recommended = try await api.fetchRecommendedJobs(userId: userId)
+            recommended.sort { ($0.matchScore ?? 0) > ($1.matchScore ?? 0) }
+            jobs = recommended
+            lastErrorMessage = nil
+        } catch {
+            do {
+                jobs = try await api.fetchJobs()
+                lastErrorMessage = nil
+            } catch {
+                lastErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func loadMyApplications() async {
         guard !isLoadingApplications else { return }
         isLoadingApplications = true
@@ -201,7 +221,22 @@ final class AppState: ObservableObject {
 
         let name = userName.trimmingCharacters(in: .whitespacesAndNewlines)
         let email = userEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resumeText = resume.resumeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var resumeText = resume.resumeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var photoBase64 = resume.photoBase64
+
+        // Requirement: apply with the resume saved on the server, not a new form.
+        if let profile = try? await api.fetchProfile(userId: userId) {
+            let serverResume = [profile.headline, profile.about, profile.skills, profile.city]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            if !serverResume.isEmpty {
+                resumeText = serverResume
+            }
+            if let serverPhoto = profile.photoBase64, !serverPhoto.isEmpty {
+                photoBase64 = serverPhoto
+            }
+        }
 
         let request = CreateApplicationRequest(
             jobId: vacancy.id,
@@ -210,7 +245,7 @@ final class AppState: ObservableObject {
             email: email,
             resumeText: resumeText.isEmpty ? "Кандидат Vakansio" : resumeText,
             coverLetter: coverLetter.trimmingCharacters(in: .whitespacesAndNewlines),
-            photoBase64: resume.photoBase64
+            photoBase64: photoBase64
         )
 
         do {
@@ -224,6 +259,23 @@ final class AppState: ObservableObject {
             showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
             return false
         }
+    }
+
+    func generateAIResume(answers: AIResumeAnswers) async -> GeneratedResume? {
+        do {
+            return try await api.generateResume(userId: userId, answers: answers)
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return nil
+        }
+    }
+
+    func fetchMessages(applicationId: String) async throws -> [ChatMessage] {
+        try await api.fetchMessages(applicationId: applicationId, userId: userId)
+    }
+
+    func sendChatMessage(applicationId: String, text: String) async throws -> ChatMessage {
+        try await api.sendMessage(applicationId: applicationId, userId: userId, text: text)
     }
 
     // MARK: - Saved
@@ -436,7 +488,12 @@ final class AppState: ObservableObject {
         resume.skills = skills
         resume.city = city
         cacheProfile()
-        return await saveProfile()
+
+        let saved = await saveProfile()
+        if saved {
+            await loadRecommendedJobs()
+        }
+        return saved
     }
 
     @discardableResult
@@ -454,7 +511,12 @@ final class AppState: ObservableObject {
         }
         resume.hasPDF = true
         cacheProfile()
-        return await saveProfile()
+
+        let saved = await saveProfile()
+        if saved {
+            await loadRecommendedJobs()
+        }
+        return saved
     }
 
     func deleteAccount() async {

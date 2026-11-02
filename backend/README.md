@@ -71,3 +71,18 @@ curl -H "x-internal-token: $TOKEN" http://178.105.32.46:8090/v1/jobs
 варто увімкнути HTTPS (Let's Encrypt) і зберігати токен у Keychain/сек'юрах, а не
 в Info.plist. У цьому прототипі токен вбудовується у збірку TestFlight з
 GitHub Actions secret `VAKANSIO_INTERNAL_TOKEN`.
+
+## AI, чат, push (оновлення)
+
+| Метод | Шлях | Призначення |
+| --- | --- | --- |
+| GET | `/v1/jobs/recommended?userId=` | DeepSeek-матчинг резюме з активними вакансіями (`matchScore` 0–100) |
+| POST | `/v1/resume/generate` | 5 відповідей → DeepSeek генерує headline/about/skills/city |
+| GET | `/v1/messages?applicationId=&userId=` | історія чату відгуку |
+| POST | `/v1/messages` | надіслати повідомлення (`applicationId`, `userId`, `text`) |
+| POST | `/v1/devices` | зареєструвати APNs device token |
+
+- Матчинг кешується в `match_scores` на 10 хвилин і скидається після `POST /v1/profile`.
+- Чат доступний лише кандидату цього відгуку або роботодавцю вакансії.
+- APNs: JWT ES256 з ключем `/opt/vakansio/apns.p8`, `APNS_KEY_ID` та `APNS_TEAM_ID`; push на зміну статусу і нове повідомлення.
+- DeepSeek: ключ у `/opt/vakansio/.env`, модель `deepseek-chat`; якщо API недоступний — детермінований fallback.

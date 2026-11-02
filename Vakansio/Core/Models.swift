@@ -47,19 +47,22 @@ struct Company: Identifiable, Hashable {
     var initials: String
     var isVerified: Bool
     var industry: String
+    var edrpou: String?
 
     init(
         id: UUID = UUID(),
         name: String,
         initials: String? = nil,
         isVerified: Bool = true,
-        industry: String = "IT · Продуктова компанія"
+        industry: String = "IT · Продуктова компанія",
+        edrpou: String? = nil
     ) {
         self.id = id
         self.name = name
         self.initials = initials ?? String(name.prefix(2)).uppercased()
         self.isVerified = isVerified
         self.industry = industry
+        self.edrpou = edrpou
     }
 }
 
@@ -123,6 +126,10 @@ struct Vacancy: Identifiable, Hashable {
     var isUrgent: Bool
     var status: JobStatus
     var applicationsCount: Int
+    var aiVerified: Bool
+    var matchScore: Int?
+    var matchReason: String?
+    var matchSource: String?
 
     init(
         id: String,
@@ -147,7 +154,11 @@ struct Vacancy: Identifiable, Hashable {
         isVerified: Bool = true,
         isUrgent: Bool = false,
         status: JobStatus = .active,
-        applicationsCount: Int = 0
+        applicationsCount: Int = 0,
+        aiVerified: Bool = true,
+        matchScore: Int? = nil,
+        matchReason: String? = nil,
+        matchSource: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -172,6 +183,10 @@ struct Vacancy: Identifiable, Hashable {
         self.isUrgent = isUrgent
         self.status = status
         self.applicationsCount = applicationsCount
+        self.aiVerified = aiVerified
+        self.matchScore = matchScore
+        self.matchReason = matchReason
+        self.matchSource = matchSource
     }
 
     var salaryText: String {
@@ -498,5 +513,40 @@ struct ToastMessage: Identifiable, Equatable {
         self.text = text
         self.icon = icon
         self.style = style
+    }
+}
+
+
+// MARK: - Chat
+
+struct ChatMessage: Identifiable, Hashable {
+    let id: String
+    let applicationId: String
+    let senderId: String
+    let senderRole: String
+    let senderName: String
+    let text: String
+    let createdAt: Date
+}
+
+// MARK: - AI resume
+
+struct AIResumeAnswers: Hashable {
+    var position: String = ""
+    var experience: String = ""
+    var skills: String = ""
+    var achievements: String = ""
+    var location: String = ""
+}
+
+struct GeneratedResume: Hashable {
+    var headline: String
+    var about: String
+    var skills: String
+    var city: String
+    var source: String
+
+    var usedDeepSeek: Bool {
+        source == "deepseek"
     }
 }

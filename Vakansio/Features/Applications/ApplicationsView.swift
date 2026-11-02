@@ -160,7 +160,9 @@ struct ApplicationsView: View {
         } else {
             VStack(spacing: 12) {
                 ForEach(filteredApplications) { application in
-                    NavigationLink(value: application.vacancy) {
+                    NavigationLink {
+                        ApplicationDetailView(application: application)
+                    } label: {
                         ApplicationRow(application: application)
                     }
                     .buttonStyle(.plain)

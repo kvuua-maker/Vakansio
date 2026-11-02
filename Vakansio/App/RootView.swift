@@ -27,6 +27,14 @@ struct RootView: View {
         .background(VK.screen.ignoresSafeArea())
         .task {
             await app.bootstrap()
+            if app.hasCompletedOnboarding {
+                PushManager.shared.requestAuthorization()
+            }
+        }
+        .onChange(of: app.hasCompletedOnboarding) { _, completed in
+            if completed {
+                PushManager.shared.requestAuthorization()
+            }
         }
         .preferredColorScheme(app.themePreference.colorScheme)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: app.toast?.id)
