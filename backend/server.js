@@ -3,7 +3,7 @@
 /**
  * Vakansio API — Node.js 22 + SQLite (node:sqlite), no external dependencies.
  *
- * Auth: every /v1 request must carry `x-internal-token: <INTERNAL_TOKEN>`.
+ * Auth: /v1/auth/apple is public; every other /v1 route requires our JWT.
  * Storage: users, jobs, applications. Photos are stored as base64 strings.
  */
 
@@ -14,11 +14,15 @@ const crypto = require('node:crypto');
 const http2 = require('node:http2');
 const { DatabaseSync } = require('node:sqlite');
 const { seedDatabase } = require('./seed-data');
+const { signJwt, verifyJwt, verifyAppleIdentityToken } = require('./auth');
+const { verifyAppStoreJws } = require('./appstore');
 
 const PORT = Number(process.env.PORT || 8090);
 const HOST = process.env.HOST || '127.0.0.1';
-const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || '';
 const DB_PATH = process.env.DB_PATH || '/opt/vakansio/vakansio.db';
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const TIER_LIMITS = { starter: 3, pro: 10, business: 9999 };
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions';
@@ -32,7 +36,6 @@ const APNS_HOST = (process.env.APNS_ENV || 'production') === 'sandbox'
   ? 'https://api.sandbox.push.apple.com'
   : 'https://api.push.apple.com';
 
-const ADMIN_EMAIL = 'kvuua@yahoo.com';
 const OVERIT_API_URL = process.env.OVERIT_API_URL || 'https://overit.com.ua/api/search';
 const OVERIT_FREE_LIMIT = 25;
 const OVERIT_PAID_PACK = 100;
@@ -41,9 +44,12 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_PAYMENT_METHOD_FALLBACK = process.env.STRIPE_OVERIT_PAYMENT_METHOD || '';
 const STRIPE_API_URL = 'https://api.stripe.com/v1/payment_intents';
 
-if (!INTERNAL_TOKEN) {
-  console.error('INTERNAL_TOKEN is not set');
+if (!JWT_SECRET) {
+  console.error('JWT_SECRET is not set');
   process.exit(1);
+}
+if (!ADMIN_SECRET) {
+  console.error('ADMIN_SECRET is not set; admin claim will be disabled');
 }
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -184,6 +190,15 @@ ensureColumn('users', 'company_verified', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'verification_status', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'stripe_customer_id', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'stripe_payment_method_id', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'apple_sub', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'subscription_tier', "TEXT NOT NULL DEFAULT 'starter'");
+ensureColumn('users', 'subscription_expires_at', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'subscription_original_transaction_id', "TEXT NOT NULL DEFAULT ''");
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub
+  ON users(apple_sub) WHERE apple_sub <> '';
+`);
 
 // ---------- helpers ----------
 
@@ -233,7 +248,7 @@ function httpError(statusCode, message) {
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, x-internal-token',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   'Access-Control-Max-Age': '86400',
 };
@@ -358,6 +373,9 @@ function profileJson(row) {
     companyEdrpou: row.company_edrpou || '',
     companyVerified: Boolean(row.company_verified),
     verificationStatus: row.verification_status || '',
+    appleLinked: Boolean(row.apple_sub),
+    subscriptionTier: row.subscription_tier || 'starter',
+    subscriptionExpiresAt: row.subscription_expires_at || '',
     createdAt: row.created_at,
   };
 }
@@ -504,7 +522,7 @@ function heuristicMatch(job, resumeText) {
 }
 
 async function deepseekMatchScores(jobs, resumeText) {
-  const payload = jobs.slice(0, 10).map((job) => ({
+  const payload = jobs.map((job) => ({
     jobId: job.id,
     title: job.title,
     company: job.company_name,
@@ -513,12 +531,12 @@ async function deepseekMatchScores(jobs, resumeText) {
   }));
 
   const system = [
-    'Ти — senior IT-рекрутер і движок матчингу вакансій.',
-    'Порівняй резюме кандидата з кожною вакансією.',
+    'Ти — експерт з підбору персоналу для ВСІХ професій: IT, продажі, будівництво, транспорт, медицина, освіта, HoReCa, офіс, робітничі спеціальності.',
+    'Порівняй резюме кандидата з кожною вакансією, враховуючи посаду, досвід, навички, місто, ліцензії та фізичні вимоги.',
     'Поверни СУВОРО валідний JSON без markdown:',
     '{"matches":[{"jobId":"...","score":0,"reason":"..."}]}',
     'score — ціле 0..100, reason — українською, до 140 символів.',
-    'Оцінюй релевантність навичок, досвіду та міста. Не вигадуй jobId.',
+    'Не вигадуй jobId і не оцінюй професії лише за IT-критеріями.',
   ].join(' ');
 
   const user = `РЕЗЮМЕ КАНДИДАТА:\n${resumeText.slice(0, 2000)}\n\nВАКАНСІЇ:\n${JSON.stringify(payload)}`;
@@ -552,8 +570,6 @@ function upsertMatchScore(userId, jobId, match) {
 }
 
 async function recommendedJobsFor(userId) {
-  approvePendingJobs();
-
   const jobs = db.prepare(
     `SELECT j.*,
        (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applications_count
@@ -592,11 +608,27 @@ async function recommendedJobsFor(userId) {
       scores.set(job.id, { score: row.score, reason: row.reason, source: row.source });
     }
   } else {
-    try {
-      scores = await deepseekMatchScores(jobs, resumeText);
-    } catch (error) {
-      console.error('DeepSeek matching failed, using heuristic:', error.message);
-      scores = new Map();
+    const batches = [];
+    for (let index = 0; index < jobs.length; index += 10) {
+      batches.push(jobs.slice(index, index + 10));
+    }
+
+    const batchResults = await Promise.all(
+      batches.map(async (batch) => {
+        try {
+          return await deepseekMatchScores(batch, resumeText);
+        } catch (error) {
+          console.error('DeepSeek batch matching failed, using heuristic:', error.message);
+          return new Map();
+        }
+      })
+    );
+
+    scores = new Map();
+    for (const batchResult of batchResults) {
+      for (const [jobId, match] of batchResult.entries()) {
+        scores.set(jobId, match);
+      }
     }
 
     for (const job of jobs) {
@@ -1055,21 +1087,169 @@ function pushStatusChange(userId, jobTitle, status, applicationId) {
 
 // ---------- moderation ----------
 
-function approvePendingJobs() {
-  const cutoff = Date.now() - 45 * 1000;
-  const rows = db.prepare("SELECT id, created_at FROM jobs WHERE status = 'pending'").all();
-  const update = db.prepare("UPDATE jobs SET status = 'active' WHERE id = ?");
-  for (const row of rows) {
-    const createdAt = Date.parse(row.created_at);
-    if (Number.isFinite(createdAt) && createdAt <= cutoff) {
-      update.run(row.id);
-    }
-  }
-}
-
 // ---------- seed ----------
 
 // Seed data lives in seed-data.js and is versioned via app_meta.
+
+// ---------- AI moderation ----------
+
+async function moderateJob(jobId) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  if (!job || job.status !== 'pending') return;
+
+  const system = [
+    'Ти — модератор вакансій для всіх професій.',
+    'Перевір вакансію на шахрайство, вимагання грошей, нецензурну лексику, дискримінацію, фейковість, небезпечні умови праці та спам.',
+    'Поверни СУВОРО валідний JSON без markdown:',
+    '{"decision":"approve|reject|manual_review","reason":"..."}',
+    'approve — якщо вакансія виглядає легітимною; reject — очевидне шахрайство/порушення; manual_review — сумнівний випадок.',
+  ].join(' ');
+
+  const user = JSON.stringify({
+    title: job.title,
+    company: job.company_name,
+    city: job.city,
+    category: job.category,
+    salaryMin: job.salary_min,
+    salaryMax: job.salary_max,
+    description: String(job.description || '').slice(0, 2500),
+    requirements: parseArray(job.requirements).join('; ').slice(0, 800),
+  });
+
+  let nextStatus = 'pending_manual_review';
+  try {
+    const data = await deepseekJson(system, user, 500);
+    const decision = str(data.decision).toLowerCase();
+    if (decision === 'approve') nextStatus = 'active';
+    else if (decision === 'reject') nextStatus = 'rejected';
+    else nextStatus = 'pending_manual_review';
+  } catch (error) {
+    console.error('Job moderation failed, sending to manual review:', error.message);
+    nextStatus = 'pending_manual_review';
+  }
+
+  db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(nextStatus, jobId);
+}
+
+// ---------- smart search ----------
+
+async function parseSearchQuery(query) {
+  const words = normalizeText(query).split(' ').filter(Boolean);
+  if (words.length <= 2) return null;
+
+  const system = [
+    'Ти — експерт з пошуку роботи для всіх професій.',
+    'Витягни параметри: посада, місто, досвід.',
+    'Поверни СУВОРО валідний JSON без markdown:',
+    '{"position":"...","city":"...","experience":"...","keywords":["..."]}',
+    'Якщо параметра немає — порожній рядок або порожній масив. Не вигадуй.',
+  ].join(' ');
+
+  try {
+    const data = await deepseekJson(system, query, 400);
+    return {
+      position: str(data.position),
+      city: str(data.city),
+      experience: str(data.experience),
+      keywords: Array.isArray(data.keywords) ? data.keywords.map(str).filter(Boolean).slice(0, 8) : [],
+    };
+  } catch (error) {
+    console.error('Search query parsing failed:', error.message);
+    return null;
+  }
+}
+
+async function searchJobsFor(url) {
+  const query = str(url.searchParams.get('q'));
+  const explicitCity = str(url.searchParams.get('city'));
+  const explicitCategory = str(url.searchParams.get('category'));
+  const minSalary = Math.max(0, int(url.searchParams.get('minSalary')));
+  const remote = url.searchParams.get('remote') === '1';
+  const office = url.searchParams.get('office') === '1';
+  const page = Math.max(1, int(url.searchParams.get('page'), 1));
+  const limit = Math.min(50, Math.max(1, int(url.searchParams.get('limit'), 20)));
+
+  const parsed = await parseSearchQuery(query);
+  const city = explicitCity || (parsed && parsed.city) || '';
+  const category = explicitCategory || '';
+  const position = parsed && parsed.position ? normalizeText(parsed.position) : '';
+  const experience = parsed && parsed.experience ? normalizeText(parsed.experience) : '';
+  const keywords = parsed && parsed.keywords ? parsed.keywords.map(normalizeText).filter(Boolean) : [];
+  const fallbackQuery = normalizeText(query);
+
+  const rows = db.prepare(
+    `SELECT j.*,
+      (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applications_count
+     FROM jobs j WHERE j.status = 'active' ORDER BY j.created_at DESC`
+  ).all();
+
+  const filtered = rows.filter((job) => {
+    const haystack = normalizeText([
+      job.title,
+      job.company_name,
+      job.description,
+      job.category,
+      parseArray(job.requirements).join(' '),
+    ].join(' '));
+
+    let matchesText = true;
+    if (position) {
+      matchesText = haystack.includes(position);
+    } else if (keywords.length) {
+      matchesText = keywords.some((keyword) => haystack.includes(keyword));
+    } else if (fallbackQuery) {
+      matchesText = haystack.includes(fallbackQuery);
+    }
+
+    if (matchesText && !position && !keywords.length && fallbackQuery && query.split(/\s+/).length > 2) {
+      matchesText = haystack.includes(fallbackQuery);
+    }
+
+    const matchesCity = !city
+      || normalizeText(job.city).includes(normalizeText(city))
+      || (normalizeText(city) === 'віддалено' && Boolean(job.is_remote));
+    const matchesCategory = !category || job.category === category;
+    const matchesSalary = !minSalary || Number(job.salary_max || 0) >= minSalary;
+    const matchesFormat = remote && office ? true : remote ? Boolean(job.is_remote) : office ? !job.is_remote : true;
+
+    let matchesExperience = true;
+    if (experience && !experience.includes('не')) {
+      const years = (experience.match(/\d+/) || [])[0];
+      if (years) matchesExperience = normalizeText(job.experience).includes(years);
+    }
+
+    return matchesText && matchesCity && matchesCategory && matchesSalary && matchesFormat && matchesExperience;
+  });
+
+  const total = filtered.length;
+  const start = (page - 1) * limit;
+  const items = filtered.slice(start, start + limit);
+
+  return {
+    items: items.map(jobJson),
+    page,
+    limit,
+    total,
+    hasMore: start + items.length < total,
+    parsed: parsed ? {
+      position: parsed.position,
+      city: parsed.city,
+      experience: parsed.experience,
+      keywords: parsed.keywords,
+    } : null,
+  };
+}
+
+function ensureMatchVersion() {
+  const VERSION = '2';
+  const row = db.prepare("SELECT value FROM app_meta WHERE key = 'match_version'").get();
+  if (row && row.value === VERSION) return;
+  db.prepare('DELETE FROM match_scores').run();
+  db.prepare(
+    `INSERT INTO app_meta (key, value) VALUES ('match_version', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(VERSION);
+}
 
 // ---------- routes ----------
 
@@ -1085,7 +1265,8 @@ async function handle(req, res) {
   }
 
   if (pathname === '/health') {
-    send(res, 200, { ok: true, service: 'vakansio-api', time: nowIso() });
+    const jobs = Number(db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status = 'active'").get().count || 0);
+    send(res, 200, { ok: true, service: 'vakansio-api', jobs, time: nowIso() });
     return;
   }
 
@@ -1094,16 +1275,82 @@ async function handle(req, res) {
     return;
   }
 
-  if ((req.headers['x-internal-token'] || '') !== INTERNAL_TOKEN) {
-    send(res, 401, { error: 'Невірний або відсутній x-internal-token' });
+  // Public Apple sign-in: verifies Apple's identity token and issues our JWT.
+  if (pathname === '/v1/auth/apple' && method === 'POST') {
+    const body = await readJson(req);
+    const identityToken = str(body.identityToken);
+    const fullName = str(body.fullName);
+    if (!identityToken) throw httpError(400, 'Не вказано Apple identityToken');
+
+    let applePayload;
+    try {
+      applePayload = await verifyAppleIdentityToken(identityToken);
+    } catch (error) {
+      console.error('Apple token verification failed:', error.message);
+      throw httpError(401, 'Apple identityToken не пройшов перевірку');
+    }
+
+    const appleSub = str(applePayload.sub);
+    const email = str(applePayload.email);
+    let user = db.prepare('SELECT * FROM users WHERE apple_sub = ?').get(appleSub);
+
+    if (!user) {
+      const userId = newId('usr');
+      const fallbackName = email ? email.split('@')[0] : 'Користувач Vakansio';
+      db.prepare(
+        `INSERT INTO users
+          (id, name, email, apple_sub, subscription_tier, created_at)
+         VALUES (?, ?, ?, ?, 'starter', ?)`
+      ).run(userId, fullName || fallbackName, email, appleSub, nowIso());
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    } else {
+      db.prepare(
+        `UPDATE users SET
+          name = COALESCE(NULLIF(?, ''), name),
+          email = COALESCE(NULLIF(?, ''), email)
+         WHERE id = ?`
+      ).run(fullName, email, user.id);
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    }
+
+    send(res, 200, {
+      token: signJwt(user),
+      user: profileJson(user),
+    });
+    return;
+  }
+
+  // Every other /v1 request requires our JWT session.
+  const authHeader = String(req.headers.authorization || '');
+  const jwt = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!jwt) {
+    send(res, 401, { error: 'Потрібна авторизація' });
+    return;
+  }
+
+  let tokenPayload;
+  try {
+    tokenPayload = verifyJwt(jwt);
+  } catch (error) {
+    send(res, 401, { error: 'Сесія недійсна або прострочена' });
+    return;
+  }
+
+  const authUser = db.prepare('SELECT * FROM users WHERE id = ?').get(tokenPayload.sub);
+  if (!authUser) {
+    send(res, 401, { error: 'Користувача не знайдено' });
+    return;
+  }
+  req.user = authUser;
+
+  if (pathname === '/v1/auth/session' && method === 'GET') {
+    send(res, 200, { user: profileJson(authUser) });
     return;
   }
 
   // AI-recommended jobs
   if (pathname === '/v1/jobs/recommended' && method === 'GET') {
-    const userId = str(url.searchParams.get('userId'));
-    if (!userId) throw httpError(400, 'Не вказано userId');
-    const jobs = await recommendedJobsFor(userId);
+    const jobs = await recommendedJobsFor(req.user.id);
     send(res, 200, jobs);
     return;
   }
@@ -1111,20 +1358,53 @@ async function handle(req, res) {
   // AI resume generation
   if (pathname === '/v1/resume/generate' && method === 'POST') {
     const body = await readJson(req);
-    const userId = str(body.userId);
-    if (!userId) throw httpError(400, 'Не вказано userId');
     const resume = await generateResume(body.answers || {});
     send(res, 200, resume);
+    return;
+  }
+
+  // Apple App Store subscription JWS verification.
+  if (pathname === '/v1/subscription/verify' && method === 'POST') {
+    const body = await readJson(req);
+    const jws = str(body.jws);
+    if (!jws) throw httpError(400, 'Не вказано JWS транзакції');
+
+    let subscription;
+    try {
+      subscription = verifyAppStoreJws(jws);
+    } catch (error) {
+      console.error('App Store JWS verification failed:', error.message);
+      throw httpError(400, 'Транзакція App Store не пройшла перевірку');
+    }
+
+    db.prepare(
+      `UPDATE users SET
+        subscription_tier = ?,
+        subscription_expires_at = ?,
+        subscription_original_transaction_id = ?
+       WHERE id = ?`
+    ).run(
+      subscription.tier,
+      subscription.expiresAt,
+      subscription.originalTransactionId,
+      req.user.id
+    );
+
+    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    send(res, 200, {
+      tier: subscription.tier,
+      expiresAt: subscription.expiresAt,
+      user: profileJson(updated),
+    });
     return;
   }
 
   // Overit company verification
   if (pathname === '/v1/company/verify' && method === 'POST') {
     const body = await readJson(req);
-    const userId = str(body.userId);
+    const userId = req.user.id;
     const edrpou = str(body.edrpou).replace(/\D/g, '');
 
-    if (!userId) throw httpError(400, 'Не вказано userId');
     if (!/^\d{8}$|^\d{10}$/.test(edrpou)) {
       throw httpError(400, 'ЄДРПОУ має містити 8 або 10 цифр');
     }
@@ -1144,13 +1424,13 @@ async function handle(req, res) {
 
   // Hidden owner admin panel
   if (pathname === '/v1/admin/overview' && method === 'GET') {
-    const userId = str(url.searchParams.get('userId'));
-    if (!userId) throw httpError(400, 'Не вказано userId');
-
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const user = req.user;
     if (!user || !user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
 
     const count = (table) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count || 0);
+    const pendingJobsCount = Number(
+      db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status = 'pending_manual_review'").get().count || 0
+    );
     const counts = {
       users: count('users'),
       jobs: count('jobs'),
@@ -1160,6 +1440,7 @@ async function handle(req, res) {
           "SELECT COUNT(*) AS count FROM verification_requests WHERE status = 'pending_manual_review'"
         ).get().count || 0
       ),
+      pendingJobs: pendingJobsCount,
     };
 
     const pending = db.prepare(
@@ -1169,17 +1450,92 @@ async function handle(req, res) {
        ORDER BY created_at DESC LIMIT 10`
     ).all();
 
+    const pendingJobs = db.prepare(
+      `SELECT id, title, company_name, city, category, status, created_at
+       FROM jobs
+       WHERE status = 'pending_manual_review'
+       ORDER BY created_at DESC LIMIT 20`
+    ).all();
+
     send(res, 200, {
       usage: usageJson(ensureUsage()),
       counts,
       pending,
+      pendingJobs,
     });
+    return;
+  }
+
+  // Admin: approve/reject an AI-flagged job
+  const adminJobMatch = pathname.match(/^\/v1\/admin\/jobs\/([^/]+)\/moderate$/);
+  if (adminJobMatch && method === 'POST') {
+    if (!req.user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
+    const body = await readJson(req);
+    const action = str(body.action);
+    if (!['approve', 'reject'].includes(action)) throw httpError(400, 'Дія має бути approve або reject');
+
+    const jobId = decodeURIComponent(adminJobMatch[1]);
+    const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+    if (!job) throw httpError(404, 'Вакансію не знайдено');
+    if (!['pending', 'pending_manual_review'].includes(job.status)) {
+      throw httpError(400, 'Вакансія вже не очікує модерації');
+    }
+
+    if (action === 'approve') {
+      db.prepare(
+        `UPDATE jobs SET status = 'active', company_verified = 1, verified = 1 WHERE id = ?`
+      ).run(jobId);
+    } else {
+      db.prepare(`UPDATE jobs SET status = 'rejected' WHERE id = ?`).run(jobId);
+    }
+
+    send(res, 200, jobJson(getJobRow(jobId)));
+    return;
+  }
+
+  // Admin: approve/reject an Overit manual-review request
+  const adminVerificationMatch = pathname.match(/^\/v1\/admin\/verifications\/([^/]+)$/);
+  if (adminVerificationMatch && method === 'POST') {
+    if (!req.user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
+    const body = await readJson(req);
+    const action = str(body.action);
+    if (!['approve', 'reject'].includes(action)) throw httpError(400, 'Дія має бути approve або reject');
+
+    const requestId = decodeURIComponent(adminVerificationMatch[1]);
+    const request = db.prepare('SELECT * FROM verification_requests WHERE id = ?').get(requestId);
+    if (!request) throw httpError(404, 'Заявку не знайдено');
+    if (request.status !== 'pending_manual_review') {
+      throw httpError(400, 'Заявка вже оброблена');
+    }
+
+    if (action === 'approve') {
+      db.prepare(
+        `UPDATE users SET company_edrpou = ?, company_verified = 1, verification_status = 'verified' WHERE id = ?`
+      ).run(request.edrpou, request.user_id);
+      db.prepare(
+        `UPDATE jobs SET company_edrpou = ?, company_verified = 1, verified = 1 WHERE employer_id = ?`
+      ).run(request.edrpou, request.user_id);
+      db.prepare(`UPDATE verification_requests SET status = 'approved' WHERE id = ?`).run(requestId);
+    } else {
+      db.prepare(
+        `UPDATE users SET company_verified = 0, verification_status = 'rejected' WHERE id = ?`
+      ).run(request.user_id);
+      db.prepare(`UPDATE verification_requests SET status = 'rejected' WHERE id = ?`).run(requestId);
+    }
+
+    send(res, 200, { ok: true, status: action === 'approve' ? 'approved' : 'rejected' });
+    return;
+  }
+
+  // Smart search
+  if (pathname === '/v1/jobs/search' && method === 'GET') {
+    const result = await searchJobsFor(url);
+    send(res, 200, result);
     return;
   }
 
   // Jobs feed
   if (pathname === '/v1/jobs' && method === 'GET') {
-    approvePendingJobs();
     const q = normalizeText(url.searchParams.get('q'));
     const city = str(url.searchParams.get('city'));
     const category = str(url.searchParams.get('category'));
@@ -1207,14 +1563,22 @@ async function handle(req, res) {
   // Create a job
   if (pathname === '/v1/jobs' && method === 'POST') {
     const body = await readJson(req);
-    const employerId = str(body.employerId);
+    const employerId = req.user.id;
     const title = str(body.title);
     const description = str(body.description);
     const city = str(body.city) || 'Київ';
 
-    if (!employerId) throw httpError(400, 'Не вказано employerId');
     if (!title) throw httpError(400, 'Вкажіть назву вакансії');
     if (description.length < 20) throw httpError(400, 'Опис вакансії має містити щонайменше 20 символів');
+
+    const tier = req.user.subscription_tier || 'starter';
+    const limit = TIER_LIMITS[tier] || TIER_LIMITS.starter;
+    const used = Number(
+      db.prepare('SELECT COUNT(*) AS count FROM jobs WHERE employer_id = ?').get(employerId).count || 0
+    );
+    if (used >= limit) {
+      throw httpError(403, `Ліміт тарифу ${tier} вичерпано (${limit} вакансій). Оновіть тариф.`);
+    }
 
     const salaryMin = Math.max(0, int(body.salaryMin));
     const salaryMax = Math.max(salaryMin, int(body.salaryMax));
@@ -1252,15 +1616,15 @@ async function handle(req, res) {
       createdAt
     );
 
-    send(res, 201, jobJson(getJobRow(jobId)));
+    const created = jobJson(getJobRow(jobId));
+    send(res, 201, created);
+    moderateJob(jobId).catch((error) => console.error('Moderation error:', error.message));
     return;
   }
 
   // Employer jobs
   if (pathname === '/v1/jobs/employer' && method === 'GET') {
-    const employerId = str(url.searchParams.get('employerId'));
-    if (!employerId) throw httpError(400, 'Не вказано employerId');
-    approvePendingJobs();
+    const employerId = req.user.id;
 
     const rows = db
       .prepare(
@@ -1285,8 +1649,7 @@ async function handle(req, res) {
 
   // Applications of the current user
   if (pathname === '/v1/applications/my' && method === 'GET') {
-    const userId = str(url.searchParams.get('userId'));
-    if (!userId) throw httpError(400, 'Не вказано userId');
+    const userId = req.user.id;
 
     const rows = db
       .prepare('SELECT * FROM applications WHERE user_id = ? ORDER BY created_at DESC')
@@ -1305,8 +1668,7 @@ async function handle(req, res) {
 
   // Applications for the employer (candidates)
   if (pathname === '/v1/applications/employer' && method === 'GET') {
-    const employerId = str(url.searchParams.get('employerId'));
-    if (!employerId) throw httpError(400, 'Не вказано employerId');
+    const employerId = req.user.id;
 
     const rows = db
       .prepare(
@@ -1332,8 +1694,8 @@ async function handle(req, res) {
   if (pathname === '/v1/applications' && method === 'POST') {
     const body = await readJson(req);
     const jobId = str(body.jobId);
-    const userId = str(body.userId);
-    if (!jobId || !userId) throw httpError(400, 'Потрібні jobId та userId');
+    const userId = req.user.id;
+    if (!jobId) throw httpError(400, 'Потрібен jobId');
 
     const job = getJobRow(jobId);
     if (!job) throw httpError(404, 'Вакансію не знайдено');
@@ -1386,9 +1748,7 @@ async function handle(req, res) {
 
   // Mark all applications of an employer as viewed
   if (pathname === '/v1/applications/mark-viewed' && method === 'POST') {
-    const body = await readJson(req);
-    const employerId = str(body.employerId);
-    if (!employerId) throw httpError(400, 'Не вказано employerId');
+    const employerId = req.user.id;
 
     const info = db
       .prepare(
@@ -1405,7 +1765,7 @@ async function handle(req, res) {
   const statusMatch = pathname.match(/^\/v1\/applications\/([^/]+)\/status$/);
   if (statusMatch && method === 'POST') {
     const body = await readJson(req);
-    const employerId = str(body.employerId);
+    const employerId = req.user.id;
     const status = str(body.status);
     const allowed = ['sent', 'viewed', 'invited', 'rejected'];
     if (!allowed.includes(status)) throw httpError(400, 'Невідомий статус');
@@ -1425,8 +1785,8 @@ async function handle(req, res) {
   // Chat messages
   if (pathname === '/v1/messages' && method === 'GET') {
     const applicationId = str(url.searchParams.get('applicationId'));
-    const userId = str(url.searchParams.get('userId'));
-    if (!applicationId || !userId) throw httpError(400, 'Потрібні applicationId та userId');
+    const userId = req.user.id;
+    if (!applicationId) throw httpError(400, 'Потрібен applicationId');
 
     const context = getApplicationContext(applicationId);
     if (!context) throw httpError(404, 'Відгук не знайдено');
@@ -1444,10 +1804,10 @@ async function handle(req, res) {
   if (pathname === '/v1/messages' && method === 'POST') {
     const body = await readJson(req);
     const applicationId = str(body.applicationId);
-    const userId = str(body.userId);
+    const userId = req.user.id;
     const text = str(body.text).slice(0, 2000);
-    if (!applicationId || !userId || !text) {
-      throw httpError(400, 'Потрібні applicationId, userId і text');
+    if (!applicationId || !text) {
+      throw httpError(400, 'Потрібні applicationId і text');
     }
 
     const context = getApplicationContext(applicationId);
@@ -1482,9 +1842,9 @@ async function handle(req, res) {
   // Push device registration
   if (pathname === '/v1/devices' && method === 'POST') {
     const body = await readJson(req);
-    const userId = str(body.userId);
+    const userId = req.user.id;
     const token = str(body.token);
-    if (!userId || token.length < 32) throw httpError(400, 'Потрібні userId і token');
+    if (token.length < 32) throw httpError(400, 'Потрібен token');
 
     db.prepare(
       `INSERT INTO devices (user_id, token, platform, updated_at)
@@ -1500,8 +1860,7 @@ async function handle(req, res) {
 
   // Profile
   if (pathname === '/v1/profile' && method === 'GET') {
-    const userId = str(url.searchParams.get('userId'));
-    if (!userId) throw httpError(400, 'Не вказано userId');
+    const userId = req.user.id;
     const row = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!row) throw httpError(404, 'Профіль не знайдено');
     send(res, 200, profileJson(row));
@@ -1510,8 +1869,7 @@ async function handle(req, res) {
 
   if (pathname === '/v1/profile' && method === 'POST') {
     const body = await readJson(req);
-    const userId = str(body.id) || str(body.userId);
-    if (!userId) throw httpError(400, 'Не вказано id користувача');
+    const userId = req.user.id;
 
     const name = str(body.name);
     const email = str(body.email);
@@ -1531,8 +1889,14 @@ async function handle(req, res) {
     }
 
     const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-    const effectiveEmail = email || (existing && existing.email) || '';
-    const isAdmin = effectiveEmail.trim().toLowerCase() === ADMIN_EMAIL ? 1 : 0;
+    const adminSecret = str(body.adminSecret);
+    let isAdmin = existing && existing.is_admin ? 1 : 0;
+    if (adminSecret) {
+      if (!ADMIN_SECRET || adminSecret !== ADMIN_SECRET) {
+        throw httpError(403, 'Невірний адмін-код');
+      }
+      isAdmin = 1;
+    }
 
     db.prepare(
       `INSERT INTO users (id, name, email, photo, headline, about, skills, city, resume_text, is_admin, created_at)
@@ -1567,8 +1931,7 @@ async function handle(req, res) {
   }
 
   if (pathname === '/v1/profile' && method === 'DELETE') {
-    const userId = str(url.searchParams.get('userId'));
-    if (!userId) throw httpError(400, 'Не вказано userId');
+    const userId = req.user.id;
 
     db.exec('BEGIN');
     try {
@@ -1611,8 +1974,7 @@ const server = http.createServer((req, res) => {
 });
 
 seedDatabase(db);
-approvePendingJobs();
-setInterval(approvePendingJobs, 30 * 1000).unref();
+ensureMatchVersion();
 
 server.listen(PORT, HOST, () => {
   console.log(`Vakansio API listening on http://${HOST}:${PORT}`);
