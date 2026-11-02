@@ -26,8 +26,8 @@ const DESCRIPTION = `Vakansio — це розумний додаток для п
 const KEYWORDS = 'робота,вакансії,пошук роботи,підробіток,резюме,зарплата,hr,найм,робота вдома,робота київ,it,маркетинг,продажі,медицина,будівництво,офіс';
 const PROMOTIONAL = 'Знайдіть роботу мрії за 1 хвилину! ШІ-перевірка вакансій, захист від шахраїв та зручний чат з роботодавцем. Для всіх професій!';
 const WHATS_NEW = 'Перший реліз Vakansio. Розумний пошук, AI-модерація вакансій та зручний чат.';
-const SUPPORT_URL = 'https://178.105.32.46:8443/legal/privacy';
-const MARKETING_URL = 'https://178.105.32.46:8443/legal/terms';
+const SUPPORT_URL = 'https://kvuua-maker.github.io/Vakansio/legal/privacy.html';
+const MARKETING_URL = 'https://kvuua-maker.github.io/Vakansio/legal/terms.html';
 
 const keyId = process.env.ASC_KEY_ID || '';
 const issuerId = process.env.ASC_ISSUER_ID || process.env.ASK_ISSUER_ID || '';
