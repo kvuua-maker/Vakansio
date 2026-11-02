@@ -8,6 +8,10 @@ struct EmployerDashboardView: View {
     @State private var showPaywall = false
     @State private var jobToDelete: Vacancy?
     @State private var showDeleteJob = false
+    @State private var edrpouDraft = ""
+    @State private var isVerifyingCompany = false
+    @State private var verificationMessage: String?
+    @AppStorage("vk.hideCompanyVerificationPrompt") private var hideCompanyVerificationPrompt = false
 
     private var companyName: String {
         let name = app.userName.vkTrimmed
@@ -23,6 +27,10 @@ struct EmployerDashboardView: View {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         header
                         subscriptionCard
+
+                        if !app.companyVerified && !hideCompanyVerificationPrompt {
+                            companyVerificationPrompt
+                        }
 
                         if app.isLoadingEmployer && app.employerJobs.isEmpty {
                             SkeletonStatRow()
@@ -159,6 +167,107 @@ struct EmployerDashboardView: View {
             in: RoundedRectangle(cornerRadius: 22, style: .continuous)
         )
         .shadow(color: VK.brand.opacity(0.2), radius: 18, x: 0, y: 10)
+    }
+
+    // MARK: Company verification
+
+    private var companyVerificationPrompt: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+
+                Text("Підтвердіть компанію")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(VK.textPrimary)
+
+                Spacer(minLength: 0)
+            }
+
+            Text("Кандидати у 3 рази частіше відгукуються на перевірені вакансії. Введіть ваш ЄДРПОУ, щоб підняти вакансії в топ стрічки та викликати довіру.")
+                .font(.system(size: 12))
+                .foregroundStyle(VK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                TextField("8 цифр ЄДРПОУ", text: $edrpouDraft)
+                    .font(.system(size: 14))
+                    .keyboardType(.numberPad)
+                    .padding(.horizontal, 12)
+                    .frame(height: 42)
+                    .background(VK.screen, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(VK.hairline, lineWidth: 1)
+                    )
+
+                Button {
+                    verifyCompany()
+                } label: {
+                    Group {
+                        if isVerifyingCompany {
+                            ProgressView()
+                                .tint(Color.white)
+                                .scaleEffect(0.85)
+                        } else {
+                            Text("Перевірити")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                    }
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 14)
+                    .frame(height: 42)
+                    .background(VK.brand, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isVerifyingCompany)
+            }
+
+            if let verificationMessage {
+                Text(verificationMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(VK.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if app.companyVerificationStatus == "pending_manual_review" {
+                Text("Ліміт безкоштовних перевірок вичерпано. Заявку передано на ручну перевірку.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(VK.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button {
+                hideCompanyVerificationPrompt = true
+            } label: {
+                Text("Зробити це пізніше")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(VK.textTertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .vkCard()
+    }
+
+    private func verifyCompany() {
+        let digits = edrpouDraft.filter { $0.isNumber }
+        guard digits.count == 8 || digits.count == 10 else {
+            app.showToast("ЄДРПОУ має містити 8 або 10 цифр", icon: "exclamationmark.triangle.fill", style: .error)
+            return
+        }
+
+        isVerifyingCompany = true
+        verificationMessage = nil
+
+        Task { @MainActor in
+            let result = await app.verifyCompany(edrpou: digits)
+            isVerifyingCompany = false
+            guard let result else { return }
+            if result.verified {
+                verificationMessage = nil
+            } else {
+                verificationMessage = result.reason ?? "Компанію не вдалося підтвердити автоматично."
+            }
+        }
     }
 
     // MARK: Stats

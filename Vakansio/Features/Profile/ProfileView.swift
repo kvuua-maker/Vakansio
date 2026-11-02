@@ -20,6 +20,7 @@ struct ProfileView: View {
     @State private var edrpouDraft = ""
     @State private var isVerifyingCompany = false
     @State private var verificationMessage: String?
+    @AppStorage("vk.hideCompanyVerificationPrompt") private var hideCompanyVerificationPrompt = false
 
     private enum ProfileSheet: String, Identifiable {
         case resumeEditor
@@ -232,7 +233,7 @@ struct ProfileView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(app.companyVerified ? VK.success : VK.brand)
 
-                Text(app.companyVerified ? "Компанію перевірено" : "Перевірка компанії")
+                Text(app.companyVerified ? "Компанію перевірено" : "Підтвердіть компанію")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(VK.textPrimary)
 
@@ -253,13 +254,13 @@ struct ProfileView: View {
                     .foregroundStyle(VK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Введіть ЄДРПОУ компанії, щоб отримати бейдж «Перевірений роботодавець».")
+                Text("Кандидати у 3 рази частіше відгукуються на перевірені вакансії. Введіть ваш ЄДРПОУ, щоб підняти вакансії в топ стрічки та викликати довіру.")
                     .font(.system(size: 12))
                     .foregroundStyle(VK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 8) {
-                    TextField("ЄДРПОУ, 8 цифр", text: $edrpouDraft)
+                    TextField("8 цифр ЄДРПОУ", text: $edrpouDraft)
                         .font(.system(size: 14))
                         .keyboardType(.numberPad)
                         .padding(.horizontal, 12)
@@ -303,6 +304,16 @@ struct ProfileView: View {
                         .foregroundStyle(VK.warning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Button {
+                    hideCompanyVerificationPrompt = true
+                } label: {
+                    Text("Зробити це пізніше")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(VK.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
             }
         }
         .vkCard()
@@ -526,7 +537,9 @@ struct ProfileView: View {
             }
             .vkCard()
 
-            companyVerificationCard
+            if !hideCompanyVerificationPrompt || app.companyVerified {
+                companyVerificationCard
+            }
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
@@ -733,6 +746,37 @@ struct ProfileView: View {
                 Button("Зберегти") { saveEmail() }
             } message: {
                 Text("Email для акаунта та сервісних листів. Він не показується роботодавцям або кандидатам.")
+            }
+
+            if hideCompanyVerificationPrompt && !app.companyVerified {
+                Divider().padding(.leading, 54)
+
+                Button {
+                    hideCompanyVerificationPrompt = false
+                } label: {
+                    HStack(spacing: 12) {
+                        settingIcon("shield.lefthalf.filled", tint: VK.brand)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Підтвердити компанію")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(VK.textPrimary)
+
+                            Text("Показати підказку з ЄДРПОУ")
+                                .font(.system(size: 11))
+                                .foregroundStyle(VK.textSecondary)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(VK.textTertiary)
+                    }
+                    .padding(14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             if !app.isAdmin {
