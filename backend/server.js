@@ -209,6 +209,7 @@ ensureColumn('users', 'subscription_tier', "TEXT NOT NULL DEFAULT 'starter'");
 ensureColumn('users', 'subscription_expires_at', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'subscription_original_transaction_id', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'conversation_id', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('applications', 'ai_source', "TEXT NOT NULL DEFAULT 'heuristic'");
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub
@@ -406,6 +407,7 @@ function applicationJson(row, jobRow) {
     coverLetter: row.cover_letter,
     aiScore: row.ai_score,
     aiSummary: row.ai_summary,
+    aiSource: row.ai_source || 'heuristic',
     conversationId: (getOrCreateConversation(jobRow, row.user_id) || {}).id || '',
     createdAt: row.created_at,
     job: jobJson(jobRow),
@@ -622,6 +624,46 @@ function resumeForUser(user) {
     .join('\n');
 }
 
+async function scoreApplicationWithAI(jobRow, resumeText) {
+  const fallback = scoreApplication(jobRow, resumeText);
+  const cleanResume = String(resumeText || '').trim();
+  if (!DEEPSEEK_API_KEY || !cleanResume) {
+    return { ...fallback, source: 'heuristic' };
+  }
+
+  const system = [
+    'Ти — рекрутер, який оцінює відповідність резюме вакансії для будь-якої професії.',
+    'Враховуй посаду, місто, досвід, навички, ліцензії та вимоги.',
+    'Поверни СУВОРО валідний JSON без markdown:',
+    '{"score":0,"summary":"..."}',
+    'score — ціле 0..100; summary — українською, до 220 символів, конкретно поясни збіги та прогалини.',
+  ].join(' ');
+  const user = JSON.stringify({
+    job: {
+      title: jobRow.title,
+      company: jobRow.company_name,
+      city: jobRow.city,
+      experience: jobRow.experience,
+      salaryMin: jobRow.salary_min,
+      salaryMax: jobRow.salary_max,
+      isRemote: Boolean(jobRow.is_remote),
+      description: String(jobRow.description || '').slice(0, 1800),
+      requirements: parseArray(jobRow.requirements).join('; ').slice(0, 800),
+    },
+    resume: cleanResume.slice(0, 3000),
+  });
+
+  try {
+    const data = await deepseekJson(system, user, 350);
+    const score = Math.max(0, Math.min(100, int(data.score, fallback.score)));
+    const summary = str(data.summary).slice(0, 300) || fallback.summary;
+    return { score, summary, source: 'deepseek' };
+  } catch (error) {
+    console.error('Application AI score failed, using heuristic:', error.message);
+    return { ...fallback, source: 'heuristic' };
+  }
+}
+
 function heuristicMatch(job, resumeText) {
   const result = scoreApplication(job, resumeText);
   return { score: result.score, reason: result.summary, source: 'heuristic' };
@@ -632,6 +674,11 @@ async function deepseekMatchScores(jobs, resumeText) {
     jobId: job.id,
     title: job.title,
     company: job.company_name,
+    city: job.city,
+    experience: job.experience,
+    salaryMin: job.salary_min,
+    salaryMax: job.salary_max,
+    isRemote: Boolean(job.is_remote),
     description: String(job.description || '').slice(0, 500),
     requirements: parseArray(job.requirements).join('; ').slice(0, 300),
   }));
@@ -1300,15 +1347,10 @@ async function searchJobsFor(url) {
     ].join(' '));
 
     let matchesText = true;
-    if (position) {
-      matchesText = haystack.includes(position);
-    } else if (keywords.length) {
-      matchesText = keywords.some((keyword) => haystack.includes(keyword));
+    const searchTerms = [position, ...keywords].filter(Boolean);
+    if (searchTerms.length) {
+      matchesText = searchTerms.every((term) => haystack.includes(term));
     } else if (fallbackQuery) {
-      matchesText = haystack.includes(fallbackQuery);
-    }
-
-    if (matchesText && !position && !keywords.length && fallbackQuery && query.split(/\s+/).length > 2) {
       matchesText = haystack.includes(fallbackQuery);
     }
 
@@ -1681,7 +1723,7 @@ async function handle(req, res) {
     const tier = req.user.subscription_tier || 'starter';
     const limit = TIER_LIMITS[tier] || TIER_LIMITS.starter;
     const used = Number(
-      db.prepare('SELECT COUNT(*) AS count FROM jobs WHERE employer_id = ?').get(employerId).count || 0
+      db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE employer_id = ? AND status IN ('active','pending','pending_manual_review')").get(employerId).count || 0
     );
     if (used >= limit) {
       throw httpError(403, `Ліміт тарифу ${tier} вичерпано (${limit} вакансій). Оновіть тариф.`);
@@ -1691,6 +1733,7 @@ async function handle(req, res) {
     const salaryMax = Math.max(salaryMin, int(body.salaryMax));
     const employer = db.prepare('SELECT * FROM users WHERE id = ?').get(employerId);
     const companyName = str(body.companyName) || (employer && employer.name) || 'Моя компанія';
+    const isRemote = body.isRemote === true || body.isRemote === 1 || body.isRemote === '1';
     const jobId = newId('job');
     const createdAt = nowIso();
 
@@ -1712,8 +1755,8 @@ async function handle(req, res) {
       salaryMax,
       city,
       str(body.category) || 'IT та телеком',
-      1,
-      'Повна зайнятість',
+      isRemote ? 1 : 0,
+      str(body.employmentType) || 'Повна зайнятість',
       str(body.experience) || '1–3 роки',
       JSON.stringify(jsonArray(body.requirements)),
       JSON.stringify(jsonArray(body.benefits)),
@@ -1726,6 +1769,44 @@ async function handle(req, res) {
     const created = jobJson(getJobRow(jobId));
     send(res, 201, created);
     moderateJob(jobId).catch((error) => console.error('Moderation error:', error.message));
+    return;
+  }
+
+  const archiveJobMatch = pathname.match(/^\/v1\/jobs\/([^/]+)\/archive$/);
+  if (archiveJobMatch && method === 'POST') {
+    const jobId = decodeURIComponent(archiveJobMatch[1]);
+    const job = getJobRow(jobId);
+    if (!job) throw httpError(404, 'Вакансію не знайдено');
+    if (job.employer_id !== req.user.id) throw httpError(403, 'Немає доступу до цієї вакансії');
+    db.prepare("UPDATE jobs SET status = 'closed' WHERE id = ?").run(jobId);
+    send(res, 200, jobJson(getJobRow(jobId)));
+    return;
+  }
+
+  const deleteJobMatch = pathname.match(/^\/v1\/jobs\/([^/]+)$/);
+  if (deleteJobMatch && method === 'DELETE') {
+    const jobId = decodeURIComponent(deleteJobMatch[1]);
+    const job = getJobRow(jobId);
+    if (!job) throw httpError(404, 'Вакансію не знайдено');
+    if (job.employer_id !== req.user.id) throw httpError(403, 'Немає доступу до цієї вакансії');
+
+    db.exec('BEGIN');
+    try {
+      db.prepare(
+        `DELETE FROM messages
+         WHERE conversation_id IN (SELECT id FROM conversations WHERE job_id = ?)
+            OR application_id IN (SELECT id FROM applications WHERE job_id = ?)`
+      ).run(jobId, jobId);
+      db.prepare('DELETE FROM conversations WHERE job_id = ?').run(jobId);
+      db.prepare('DELETE FROM applications WHERE job_id = ?').run(jobId);
+      db.prepare('DELETE FROM match_scores WHERE job_id = ?').run(jobId);
+      db.prepare('DELETE FROM jobs WHERE id = ?').run(jobId);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    send(res, 200, { deleted: true });
     return;
   }
 
@@ -1819,7 +1900,7 @@ async function handle(req, res) {
     const resumeText = str(body.resumeText);
     const coverLetter = str(body.coverLetter);
     const photo = str(body.photoBase64) || (user && user.photo) || null;
-    const ai = scoreApplication(job, resumeText);
+    const ai = await scoreApplicationWithAI(job, resumeText);
     const applicationId = newId('app');
     const createdAt = nowIso();
 
@@ -1845,9 +1926,9 @@ async function handle(req, res) {
     db.prepare(
       `INSERT INTO applications (
         id, job_id, user_id, name, email, photo, resume_text, cover_letter,
-        ai_score, ai_summary, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`
-    ).run(applicationId, jobId, userId, name, email, photo, resumeText, coverLetter, ai.score, ai.summary, createdAt);
+        ai_score, ai_summary, ai_source, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`
+    ).run(applicationId, jobId, userId, name, email, photo, resumeText, coverLetter, ai.score, ai.summary, ai.source, createdAt);
 
     send(res, 201, applicationJson(getApplicationRow(applicationId), getJobRow(jobId)));
     return;

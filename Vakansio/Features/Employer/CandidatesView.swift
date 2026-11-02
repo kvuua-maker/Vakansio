@@ -251,7 +251,7 @@ struct CandidateDetailSheet: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(VK.brand)
 
-                Text("AI-оцінка відповідності")
+                Text(application.aiSource == "deepseek" ? "AI-оцінка відповідності" : "Оцінка відповідності")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(VK.textPrimary)
 
@@ -265,7 +265,7 @@ struct CandidateDetailSheet: View {
             ProgressView(value: Double(application.aiScore), total: 100)
                 .tint(VK.brand)
 
-            Text(application.aiSummary.isEmpty ? "Оцінку сформовано за збігом резюме з вимогами вакансії." : application.aiSummary)
+            Text(application.aiSummary.isEmpty ? (application.aiSource == "deepseek" ? "Оцінку сформував AI." : "Оцінка за ключовими словами резюме.") : application.aiSummary)
                 .font(.system(size: 12))
                 .foregroundStyle(VK.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

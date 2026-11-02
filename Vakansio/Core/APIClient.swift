@@ -222,6 +222,15 @@ struct APIClient {
         return dto.toModel()
     }
 
+    func archiveJob(jobId: String) async throws -> Vacancy {
+        let dto: JobDTO = try await post(path: "/v1/jobs/\(jobId)/archive", body: EmptyRequest())
+        return dto.toModel()
+    }
+
+    func deleteJob(jobId: String) async throws {
+        let _: DeleteResponse = try await delete(path: "/v1/jobs/\(jobId)", query: [])
+    }
+
     func fetchEmployerJobs(employerId: String) async throws -> [Vacancy] {
         let dtos: [JobDTO] = try await get(
             path: "/v1/jobs/employer",
@@ -399,6 +408,8 @@ struct APIClient {
 
 // MARK: - Requests
 
+private struct EmptyRequest: Encodable {}
+
 struct CreateJobRequest: Encodable {
     let employerId: String
     let title: String
@@ -408,6 +419,8 @@ struct CreateJobRequest: Encodable {
     let salaryMax: Int
     let city: String
     let category: String
+    let isRemote: Bool
+    let experience: String
     let requirements: [String]
     let benefits: [String]
 }
@@ -537,6 +550,7 @@ struct ApplicationDTO: Decodable {
     let coverLetter: String?
     let aiScore: Int?
     let aiSummary: String?
+    let aiSource: String?
     let conversationId: String?
     let createdAt: String?
     let job: JobDTO
@@ -554,6 +568,7 @@ struct ApplicationDTO: Decodable {
             candidatePhotoBase64: photoBase64,
             aiScore: aiScore ?? 0,
             aiSummary: aiSummary ?? "",
+            aiSource: aiSource ?? "heuristic",
             conversationId: conversationId ?? ""
         )
     }

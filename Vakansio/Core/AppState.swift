@@ -433,27 +433,32 @@ final class AppState: ObservableObject {
 
     func createJob(
         title: String,
+        companyName: String,
         description: String,
         salaryMin: Int,
         salaryMax: Int,
         city: String,
         category: String,
+        isRemote: Bool,
+        experience: String,
         requirements: [String]
     ) async -> Vacancy? {
         isSavingJob = true
         jobCreationError = nil
         defer { isSavingJob = false }
 
-        let companyName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanCompany = companyName.trimmingCharacters(in: .whitespacesAndNewlines)
         let request = CreateJobRequest(
             employerId: userId,
             title: title,
-            companyName: companyName.isEmpty ? "Моя компанія" : companyName,
+            companyName: cleanCompany.isEmpty ? "Моя компанія" : cleanCompany,
             description: description,
             salaryMin: salaryMin,
             salaryMax: salaryMax,
             city: city,
             category: category,
+            isRemote: isRemote,
+            experience: experience,
             requirements: requirements,
             benefits: []
         )
@@ -474,6 +479,37 @@ final class AppState: ObservableObject {
             jobCreationError = error.localizedDescription
             showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
             return nil
+        }
+    }
+
+    func archiveJob(_ vacancy: Vacancy) async -> Bool {
+        do {
+            let updated = try await api.archiveJob(jobId: vacancy.id)
+            if let index = employerJobs.firstIndex(where: { $0.id == updated.id }) {
+                employerJobs[index] = updated
+            }
+            lastErrorMessage = nil
+            showToast("Вакансію архівовано", icon: "archivebox.fill", style: .success)
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func deleteJob(_ vacancy: Vacancy) async -> Bool {
+        do {
+            try await api.deleteJob(jobId: vacancy.id)
+            employerJobs.removeAll { $0.id == vacancy.id }
+            employerApplications.removeAll { $0.vacancy.id == vacancy.id }
+            lastErrorMessage = nil
+            showToast("Вакансію видалено", icon: "trash.fill", style: .success)
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
         }
     }
 
@@ -498,12 +534,18 @@ final class AppState: ObservableObject {
         defaults.set(newTier.rawValue, forKey: Keys.tier)
     }
 
+    private var occupiedVacancyCount: Int {
+        employerJobs.filter {
+            $0.status == .active || $0.status == .pending || $0.status == .pendingManualReview
+        }.count
+    }
+
     var canCreateVacancy: Bool {
-        employerJobs.count < tier.vacancyLimit
+        occupiedVacancyCount < tier.vacancyLimit
     }
 
     var vacanciesRemaining: Int {
-        max(0, tier.vacancyLimit - employerJobs.count)
+        max(0, tier.vacancyLimit - occupiedVacancyCount)
     }
 
     var totalEmployerApplications: Int {

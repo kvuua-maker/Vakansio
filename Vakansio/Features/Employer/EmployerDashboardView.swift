@@ -6,6 +6,8 @@ struct EmployerDashboardView: View {
     @EnvironmentObject private var router: TabRouter
 
     @State private var showPaywall = false
+    @State private var jobToDelete: Vacancy?
+    @State private var showDeleteJob = false
 
     private var companyName: String {
         let name = app.userName.vkTrimmed
@@ -46,6 +48,18 @@ struct EmployerDashboardView: View {
         }
         .sheet(isPresented: $showPaywall) {
             PaywallView(isModal: true)
+        }
+        .confirmationDialog(
+            "Видалити вакансію?",
+            isPresented: $showDeleteJob,
+            presenting: jobToDelete
+        ) { vacancy in
+            Button("Видалити", role: .destructive) {
+                Task { _ = await app.deleteJob(vacancy) }
+            }
+            Button("Скасувати", role: .cancel) { }
+        } message: { vacancy in
+            Text("«\(vacancy.title)» буде видалено разом із відгуками та чатами. Дію неможливо скасувати.")
         }
         .task {
             await app.loadEmployerData()
@@ -241,6 +255,30 @@ struct EmployerDashboardView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(VK.textTertiary)
             }
+
+            Menu {
+                if vacancy.status != .closed {
+                    Button {
+                        Task { _ = await app.archiveJob(vacancy) }
+                    } label: {
+                        Label("Архівувати", systemImage: "archivebox")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    jobToDelete = vacancy
+                    showDeleteJob = true
+                } label: {
+                    Label("Видалити", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(VK.textSecondary)
+                    .frame(width: 28, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .vkCard(padding: 14)
     }

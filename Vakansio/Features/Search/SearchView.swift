@@ -98,7 +98,7 @@ struct SearchView: View {
         .onChange(of: query) { _, newValue in
             debounceTask?.cancel()
             debounceTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                try? await Task.sleep(nanoseconds: 600_000_000)
                 guard !Task.isCancelled else { return }
                 debouncedQuery = newValue
                 performSearch(reset: true)
@@ -515,7 +515,7 @@ struct SearchView: View {
     private func scheduleFilterSearch() {
         filterDebounce?.cancel()
         filterDebounce = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 600_000_000)
             guard !Task.isCancelled else { return }
             performSearch(reset: true)
         }

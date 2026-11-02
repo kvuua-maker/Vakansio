@@ -10,10 +10,13 @@ struct CreateVacancyView: View {
     var showsCloseButton: Bool = false
 
     @State private var title = ""
+    @State private var companyName = ""
     @State private var city = "Київ"
     @State private var salaryMin = ""
     @State private var salaryMax = ""
     @State private var category = "IT та телеком"
+    @State private var isRemote = false
+    @State private var experience = "1–3 роки"
     @State private var description = ""
     @State private var requirements = ""
     @State private var showSuccess = false
@@ -80,6 +83,11 @@ struct CreateVacancyView: View {
             }
         } message: {
             Text("Статус: \((createdJob?.status ?? .pending).title). AI перевіряє вакансію на шахрайство та нецензурну лексику. Після схвалення вона з'явиться у стрічці.")
+        }
+        .onAppear {
+            if companyName.vkTrimmed.isEmpty {
+                companyName = app.userName
+            }
         }
         .onChange(of: title) { _, _ in
             titleError = nil
@@ -151,6 +159,13 @@ struct CreateVacancyView: View {
             }
 
             LabeledField(
+                label: "Компанія",
+                placeholder: "Назва компанії",
+                text: $companyName,
+                icon: "building.2"
+            )
+
+            LabeledField(
                 label: "Місто",
                 placeholder: "Київ",
                 text: $city,
@@ -178,6 +193,32 @@ struct CreateVacancyView: View {
             }
 
             categoryPicker
+
+            experiencePicker
+
+            HStack(spacing: 10) {
+                Image(systemName: "house.and.flag.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Віддалена робота")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(VK.textPrimary)
+                    Text("Кандидат може працювати з будь-якого міста")
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Toggle("", isOn: $isRemote)
+                    .labelsHidden()
+                    .tint(VK.brand)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 54)
+            .background(VK.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             LabeledTextEditor(
                 label: "Опис вакансії",
@@ -214,6 +255,39 @@ struct CreateVacancyView: View {
             )
         }
         .vkCard()
+    }
+
+    private var experiencePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Досвід")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(VK.textSecondary)
+
+            Menu {
+                ForEach(["Без досвіду", "До 1 року", "1–3 роки", "3–5 років", "5+ років"], id: \.self) { item in
+                    Button(item) { experience = item }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(experience)
+                        .font(.system(size: 16))
+                        .foregroundStyle(VK.textPrimary)
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.textTertiary)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 48)
+                .background(VK.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(VK.hairline, lineWidth: 1)
+                )
+            }
+        }
     }
 
     private var categoryPicker: some View {
@@ -350,11 +424,14 @@ struct CreateVacancyView: View {
         Task {
             let job = await app.createJob(
                 title: cleanTitle,
+                companyName: companyName,
                 description: cleanDescription,
                 salaryMin: minSalary,
                 salaryMax: maxSalary,
                 city: city.vkTrimmed.isEmpty ? "Київ" : city.vkTrimmed,
                 category: category,
+                isRemote: isRemote,
+                experience: experience,
                 requirements: requirementsList
             )
 
@@ -378,10 +455,13 @@ struct CreateVacancyView: View {
 
     private func reset() {
         title = ""
+        companyName = ""
         city = "Київ"
         salaryMin = ""
         salaryMax = ""
         category = "IT та телеком"
+        isRemote = false
+        experience = "1–3 роки"
         description = ""
         requirements = ""
         createdJob = nil

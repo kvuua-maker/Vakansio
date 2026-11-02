@@ -267,6 +267,7 @@ struct Application: Identifiable, Hashable {
     var candidatePhotoBase64: String?
     var aiScore: Int
     var aiSummary: String
+    var aiSource: String
     var conversationId: String
 
     init(
@@ -281,6 +282,7 @@ struct Application: Identifiable, Hashable {
         candidatePhotoBase64: String? = nil,
         aiScore: Int = 0,
         aiSummary: String = "",
+        aiSource: String = "heuristic",
         conversationId: String = ""
     ) {
         self.id = id
@@ -294,6 +296,7 @@ struct Application: Identifiable, Hashable {
         self.candidatePhotoBase64 = candidatePhotoBase64
         self.aiScore = aiScore
         self.aiSummary = aiSummary
+        self.aiSource = aiSource
         self.conversationId = conversationId
     }
 
