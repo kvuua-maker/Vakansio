@@ -264,7 +264,7 @@ jobs:
           ')
           echo "APPLE_ID_AUTH enabled: $HAS_APPLE"
           if [ "$HAS_APPLE" = "no" ]; then
-            printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH"},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-cap-req.json"
+            printf '{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH","settings":[{"key":"APPLE_ID_AUTH_APP_CONSENT","options":[{"key":"PRIMARY_APP_CONSENT","enabled":true}]}]},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"%s"}}}}}' "$BID" > "$RUNNER_TEMP/apple-cap-req.json"
             CODE=$(curl -s -o "$RUNNER_TEMP/apple-cap-resp.json" -w '%{http_code}' -X POST               -H "Authorization: Bearer $ASC_TOKEN" -H 'Content-Type: application/json'               --data @"$RUNNER_TEMP/apple-cap-req.json" "$API/bundleIdCapabilities")
             echo "enable APPLE_ID_AUTH -> HTTP $CODE"
             if [ "$CODE" = "409" ]; then
