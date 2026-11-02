@@ -134,6 +134,8 @@ struct Vacancy: Identifiable, Hashable {
     var status: JobStatus
     var applicationsCount: Int
     var aiVerified: Bool
+    var source: String
+    var externalURL: String
     var matchScore: Int?
     var matchReason: String?
     var matchSource: String?
@@ -162,6 +164,8 @@ struct Vacancy: Identifiable, Hashable {
         status: JobStatus = .active,
         applicationsCount: Int = 0,
         aiVerified: Bool = true,
+        source: String = "internal",
+        externalURL: String = "",
         matchScore: Int? = nil,
         matchReason: String? = nil,
         matchSource: String? = nil
@@ -189,9 +193,23 @@ struct Vacancy: Identifiable, Hashable {
         self.status = status
         self.applicationsCount = applicationsCount
         self.aiVerified = aiVerified
+        self.source = source
+        self.externalURL = externalURL
         self.matchScore = matchScore
         self.matchReason = matchReason
         self.matchSource = matchSource
+    }
+
+    var isExternal: Bool {
+        source != "internal" && !externalURL.isEmpty
+    }
+
+    var sourceLabel: String {
+        switch source.lowercased() {
+        case "dou": return "DOU"
+        case "jooble": return "Jooble"
+        default: return ""
+        }
     }
 
     var salaryText: String {
@@ -409,7 +427,11 @@ enum SubscriptionTier: String, CaseIterable, Identifiable, Hashable {
     }
 
     var priceText: String {
-        price == 0 ? "0 ₴" : "\(vkFormatMoney(price)) ₴"
+        switch self {
+        case .start: return "0 ₴"
+        case .pro: return "$12.99"
+        case .business: return "$29.99"
+        }
     }
 
     var periodText: String {

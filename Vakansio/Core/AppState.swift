@@ -352,6 +352,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    func openConversation(id: String) async -> Conversation? {
+        if let existing = conversations.first(where: { $0.id == id }) {
+            return existing
+        }
+        await loadConversations()
+        return conversations.first(where: { $0.id == id })
+    }
+
     func startConversation(jobId: String, candidateId: String? = nil) async -> Conversation? {
         do {
             let conversation = try await api.createConversation(jobId: jobId, candidateId: candidateId)

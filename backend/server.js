@@ -22,6 +22,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const DB_PATH = process.env.DB_PATH || '/opt/vakansio/vakansio.db';
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const OWNER_EMAIL = String(process.env.OWNER_EMAIL || 'kvuua@yahoo.com').toLowerCase();
 const TIER_LIMITS = { starter: 3, pro: 10, business: 9999 };
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
@@ -43,6 +44,8 @@ const OVERIT_PACK_PRICE_UAH = 499;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_PAYMENT_METHOD_FALLBACK = process.env.STRIPE_OVERIT_PAYMENT_METHOD || '';
 const STRIPE_API_URL = 'https://api.stripe.com/v1/payment_intents';
+const DOU_RSS_URL = process.env.DOU_RSS_URL || 'https://dou.ua/feed/vacancies/';
+const JOOBLE_API_KEY = process.env.JOOBLE_API_KEY || '';
 
 if (!JWT_SECRET) {
   console.error('JWT_SECRET is not set');
@@ -216,6 +219,10 @@ function ensureColumn(table, column, definition) {
 ensureColumn('jobs', 'company_edrpou', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('jobs', 'company_verified', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('jobs', 'ai_verified', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('jobs', 'source', "TEXT NOT NULL DEFAULT 'internal'");
+ensureColumn('jobs', 'external_url', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('jobs', 'external_id', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('jobs', 'imported_at', "TEXT NOT NULL DEFAULT ''");
 
 ensureColumn('users', 'resume_text', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
@@ -393,15 +400,31 @@ function readJson(req) {
 
 // ---------- mapping ----------
 
+const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const PHONE_PATTERN = /(\+?\d[\d\s().-]{7,}\d)/g;
+
+function maskContacts(value) {
+  return String(value || '')
+    .replace(EMAIL_PATTERN, '[email приховано]')
+    .replace(PHONE_PATTERN, (match) => {
+      const digits = match.replace(/\D/g, '');
+      return digits.length >= 9 ? '[телефон приховано]' : match;
+    });
+}
+
+function maskArray(values) {
+  return Array.isArray(values) ? values.map((value) => maskContacts(value)) : [];
+}
+
 function jobJson(row) {
   if (!row) return null;
   return {
     id: row.id,
     employerId: row.employer_id,
-    title: row.title,
-    companyName: row.company_name,
-    description: row.description,
-    summary: row.summary || (row.description || '').slice(0, 160),
+    title: maskContacts(row.title),
+    companyName: maskContacts(row.company_name),
+    description: maskContacts(row.description),
+    summary: maskContacts(row.summary || (row.description || '').slice(0, 160)),
     salaryMin: row.salary_min,
     salaryMax: row.salary_max,
     city: row.city,
@@ -409,8 +432,11 @@ function jobJson(row) {
     isRemote: Boolean(row.is_remote),
     employmentType: row.employment_type,
     experience: row.experience,
-    requirements: parseArray(row.requirements),
-    benefits: parseArray(row.benefits),
+    requirements: maskArray(parseArray(row.requirements)),
+    benefits: maskArray(parseArray(row.benefits)),
+    source: row.source || 'internal',
+    externalUrl: row.external_url || '',
+    isExternal: Boolean(row.source && row.source !== 'internal'),
     status: row.status,
     verified: Boolean(row.verified),
     companyEdrpou: row.company_edrpou || '',
@@ -434,8 +460,8 @@ function applicationJson(row, jobRow) {
     status: row.status,
     candidateName: row.name,
     photoBase64: row.photo,
-    resumeText: row.resume_text,
-    coverLetter: row.cover_letter,
+    resumeText: maskContacts(row.resume_text),
+    coverLetter: maskContacts(row.cover_letter),
     aiScore: row.ai_score,
     aiSummary: row.ai_summary,
     aiSource: row.ai_source || 'heuristic',
@@ -1311,6 +1337,31 @@ function pushStatusChange(userId, jobTitle, status, applicationId) {
 
 // ---------- AI moderation ----------
 
+function localJobDecision(job) {
+  const text = [job.title, job.description, parseArray(job.requirements).join(' ')]
+    .join(' ')
+    .toLowerCase();
+  const fraudPatterns = [
+    /передоплат/,
+    /оплат[аиу]?\s+за\s+працевлаштування/,
+    /внесок|депозит|завдаток/,
+    /переказ(?:и|ом)?\s+(?:грош|кошт)/,
+    /грош[іи]\s+вперед/,
+    /крипт|bitcoin|usdt|біткоїн/,
+    /казино|ставки|букмекер/,
+    /заробіток\s+без\s+досвіду/,
+    /реквізити|номер\s+картк/,
+    /терміново\s+.*(?:оплат|переказ)/,
+  ];
+  if (fraudPatterns.some((pattern) => pattern.test(text))) {
+    return { status: 'rejected', reason: 'Автоматична перевірка: ознаки шахрайства або вимоги оплати.' };
+  }
+  if (String(job.description || '').trim().length < 20) {
+    return { status: 'rejected', reason: 'Опис вакансії занадто короткий.' };
+  }
+  return { status: 'active', reason: 'Локальна автоматична перевірка пройдена.' };
+}
+
 async function moderateJob(jobId) {
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
   if (!job || job.status !== 'pending') return;
@@ -1319,8 +1370,8 @@ async function moderateJob(jobId) {
     'Ти — модератор вакансій для всіх професій.',
     'Перевір вакансію на шахрайство, вимагання грошей, нецензурну лексику, дискримінацію, фейковість, небезпечні умови праці та спам.',
     'Поверни СУВОРО валідний JSON без markdown:',
-    '{"decision":"approve|reject|manual_review","reason":"..."}',
-    'approve — якщо вакансія виглядає легітимною; reject — очевидне шахрайство/порушення; manual_review — сумнівний випадок.',
+    '{"decision":"approve|reject","reason":"..."}',
+    'approve — якщо вакансія виглядає легітимною; reject — очевидне шахрайство/порушення. Сумнівні випадки відхиляй.',
   ].join(' ');
 
   const user = JSON.stringify({
@@ -1334,39 +1385,42 @@ async function moderateJob(jobId) {
     requirements: parseArray(job.requirements).join('; ').slice(0, 800),
   });
 
-  let nextStatus = 'pending_manual_review';
+  let nextStatus = 'active';
+  let aiVerified = 0;
+  let decision = 'local';
+
   try {
     const data = await deepseekJson(system, user, 500);
-    const decision = str(data.decision).toLowerCase();
-    if (decision === 'approve') nextStatus = 'active';
-    else if (decision === 'reject') nextStatus = 'rejected';
-    else nextStatus = 'pending_manual_review';
+    const modelDecision = str(data.decision).toLowerCase();
+    if (modelDecision === 'approve') {
+      nextStatus = 'active';
+      aiVerified = 1;
+      decision = 'deepseek';
+    } else if (modelDecision === 'reject') {
+      nextStatus = 'rejected';
+      decision = 'deepseek';
+    } else {
+      const local = localJobDecision(job);
+      nextStatus = local.status;
+      console.warn(`Moderation returned ${modelDecision || 'empty'}; local fallback: ${nextStatus}`);
+    }
   } catch (error) {
-    console.error('Job moderation failed, sending to manual review:', error.message);
-    nextStatus = 'pending_manual_review';
+    const local = localJobDecision(job);
+    nextStatus = local.status;
+    console.error(`Job moderation unavailable; local fallback ${nextStatus}:`, error.message);
   }
 
-  db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(nextStatus, jobId);
+  db.prepare('UPDATE jobs SET status = ?, ai_verified = ? WHERE id = ?')
+    .run(nextStatus, aiVerified, jobId);
 
-  const messages = {
-    active: {
-      title: 'Вакансію схвалено',
-      body: `«${job.title}» вже доступна кандидатам.`,
-    },
-    rejected: {
-      title: 'Вакансію відхилено',
-      body: `«${job.title}» не пройшла модерацію.`,
-    },
-    pending_manual_review: {
-      title: 'Вакансія на ручній перевірці',
-      body: `«${job.title}» очікує рішення адміністратора.`,
-    },
-  };
-  const notification = messages[nextStatus] || messages.pending_manual_review;
+  const notification = nextStatus === 'active'
+    ? { title: 'Вакансію схвалено', body: `«${job.title}» вже доступна кандидатам.` }
+    : { title: 'Вакансію відхилено', body: `«${job.title}» не пройшла модерацію.` };
   sendPush(job.employer_id, notification.title, notification.body, {
     type: 'job_status',
     jobId,
     status: nextStatus,
+    source: decision,
   }).catch((error) => console.error('Moderation push failed:', error.message));
 }
 
@@ -1583,6 +1637,10 @@ async function handle(req, res) {
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     }
 
+    if (email && email.toLowerCase() === OWNER_EMAIL) {
+      db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(user.id);
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    }
     user = normalizeSubscription(user);
     send(res, 200, {
       token: signJwt(user),
@@ -1899,6 +1957,7 @@ async function handle(req, res) {
       0,
       createdAt
     );
+    db.prepare('UPDATE jobs SET ai_verified = 0 WHERE id = ?').run(jobId);
 
     const created = jobJson(getJobRow(jobId));
     send(res, 201, created);
@@ -2023,6 +2082,9 @@ async function handle(req, res) {
     const job = getJobRow(jobId);
     if (!job) throw httpError(404, 'Вакансію не знайдено');
     if (job.status !== 'active') throw httpError(400, 'Вакансія ще на модерації');
+    if (job.source && job.source !== 'internal') {
+      throw httpError(400, 'Це зовнішня вакансія. Відкрийте її на DOU або Jooble.');
+    }
 
     const duplicate = db
       .prepare('SELECT id FROM applications WHERE job_id = ? AND user_id = ?')
@@ -2242,6 +2304,9 @@ async function handle(req, res) {
 
     const job = getJobRow(jobId);
     if (!job) throw httpError(404, 'Вакансію не знайдено');
+    if (job.source && job.source !== 'internal') {
+      throw httpError(400, 'Для зовнішньої вакансії чат недоступний.');
+    }
 
     let candidateId = userId;
     if (job.employer_id === userId) {
@@ -2531,6 +2596,173 @@ const server = http.createServer((req, res) => {
     }
   });
 });
+
+function decodeXmlEntities(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function stripHtmlTags(value) {
+  return decodeXmlEntities(String(value || '').replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function insertExternalJob({ source, externalId, externalUrl, title, companyName, description, city, isRemote, salaryText }) {
+  const normalizedUrl = safeExternalUrl(externalUrl);
+  if (!normalizedUrl || !title || !externalId) return false;
+  const existing = db.prepare(
+    'SELECT id FROM jobs WHERE source = ? AND external_id = ?'
+  ).get(source, externalId);
+  if (existing) return false;
+
+  const cleanDescription = String(description || title).trim().slice(0, 8000);
+  const salaryDigits = String(salaryText || '').match(/\d{3,6}/);
+  const salary = salaryDigits ? Number(salaryDigits[0]) : 0;
+  const now = nowIso();
+  db.prepare(
+    `INSERT INTO jobs (
+      id, employer_id, title, company_name, description, summary,
+      salary_min, salary_max, city, category, is_remote,
+      employment_type, experience, requirements, benefits, contact_email,
+      status, verified, ai_verified, source, external_url, external_id, imported_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '', 'active', 0, 0, ?, ?, ?, ?, ?)`
+  ).run(
+    newId('ext'),
+    `external-${source}`,
+    title.slice(0, 200),
+    (companyName || source.toUpperCase()).slice(0, 160),
+    cleanDescription,
+    cleanDescription.slice(0, 160),
+    salary,
+    salary,
+    (city || 'Україна').slice(0, 100),
+    source === 'dou' ? 'IT та телеком' : 'Різні професії',
+    isRemote ? 1 : 0,
+    'Повна зайнятість',
+    'Не вказано',
+    source,
+    normalizedUrl,
+    String(externalId).slice(0, 300),
+    now,
+    now
+  );
+  return true;
+}
+
+async function importDouJobs() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(DOU_RSS_URL, {
+      headers: {
+        Accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8',
+        'User-Agent': 'Vakansio/1.0 (+https://178.105.32.46:8443)',
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      console.warn(`DOU RSS unavailable: HTTP ${response.status}`);
+      return 0;
+    }
+    const xml = await response.text();
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 60);
+    let imported = 0;
+    for (const match of items) {
+      const block = match[1];
+      const title = stripHtmlTags((block.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '');
+      const link = stripHtmlTags((block.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '');
+      const description = stripHtmlTags((block.match(/<description>([\s\S]*?)<\/description>/i) || [])[1] || '');
+      const pubDate = stripHtmlTags((block.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || [])[1] || '');
+      if (!title || !link) continue;
+      const companyMatch = title.match(/^(.+?)\s+(?:шукає|в пошуках|запрошує)/i);
+      const isRemote = /віддален|remote|дистанц/i.test(`${title} ${description}`);
+      if (insertExternalJob({
+        source: 'dou',
+        externalId: link,
+        externalUrl: link,
+        title,
+        companyName: companyMatch ? companyMatch[1] : 'DOU',
+        description: description || title,
+        city: 'Україна',
+        isRemote,
+        salaryText: '',
+      })) imported += 1;
+    }
+    console.log(`DOU imported ${imported} jobs from ${items.length} RSS items`);
+    return imported;
+  } catch (error) {
+    console.warn('DOU import failed:', error.message);
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function importJoobleJobs() {
+  if (!JOOBLE_API_KEY) {
+    console.log('Jooble skipped: JOOBLE_API_KEY is not set');
+    return 0;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(`https://jooble.org/api/${encodeURIComponent(JOOBLE_API_KEY)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keywords: '', location: 'Ukraine', page: 1 }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      console.warn(`Jooble unavailable: HTTP ${response.status}`);
+      return 0;
+    }
+    const data = await response.json();
+    const jobs = Array.isArray(data?.jobs) ? data.jobs.slice(0, 60) : [];
+    let imported = 0;
+    for (const item of jobs) {
+      const link = safeExternalUrl(item.link);
+      if (!link) continue;
+      if (insertExternalJob({
+        source: 'jooble',
+        externalId: link,
+        externalUrl: link,
+        title: String(item.title || '').slice(0, 200),
+        companyName: String(item.company || 'Jooble').slice(0, 160),
+        description: String(item.snippet || item.title || ''),
+        city: String(item.location || 'Україна').slice(0, 100),
+        isRemote: /remote|віддален/i.test(`${item.title} ${item.snippet}`),
+        salaryText: String(item.salary || ''),
+      })) imported += 1;
+    }
+    console.log(`Jooble imported ${imported} jobs from ${jobs.length} results`);
+    return imported;
+  } catch (error) {
+    console.warn('Jooble import failed:', error.message);
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function importExternalJobs() {
+  await Promise.all([importDouJobs(), importJoobleJobs()]);
+}
 
 seedDatabase(db);
 ensureMatchVersion();

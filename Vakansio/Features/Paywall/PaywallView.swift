@@ -188,7 +188,7 @@ struct PaywallView: View {
                     Spacer(minLength: 4)
 
                     VStack(alignment: .trailing, spacing: 0) {
-                        Text(store.products.first { VakansioStoreProduct(rawValue: $0.id)?.tier == tier }?.displayPrice ?? tier.priceText)
+                        Text(tier.priceText)
                             .font(.system(size: 19, weight: .bold))
                             .foregroundStyle(VK.textPrimary)
 

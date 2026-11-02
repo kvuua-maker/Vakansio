@@ -2,6 +2,10 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+extension Notification.Name {
+    static let vakansioOpenChat = Notification.Name("vk.openChat")
+}
+
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
@@ -25,6 +29,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound, .badge])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if let conversationId = userInfo["conversationId"] as? String, !conversationId.isEmpty {
+            UserDefaults.standard.set(conversationId, forKey: "vk.pendingConversationId")
+            NotificationCenter.default.post(name: .vakansioOpenChat, object: conversationId)
+        }
+        completionHandler()
     }
 }
 

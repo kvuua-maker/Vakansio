@@ -354,10 +354,27 @@ struct CreateVacancyView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(VK.danger)
 
-            Text(message)
-                .font(.system(size: 12))
-                .foregroundStyle(VK.danger)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(VK.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !app.isSavingJob {
+                    Button {
+                        submitError = nil
+                        submit()
+                    } label: {
+                        Text("Спробувати ще")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(VK.danger)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(VK.danger.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
 
             Spacer(minLength: 0)
         }

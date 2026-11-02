@@ -45,8 +45,8 @@ enum APIError: LocalizedError {
             return "Дані не знайдено"
         case .server(let message):
             return message
-        case .transport(let message):
-            return "Немає зв'язку з сервером: \(message)"
+        case .transport:
+            return "Немає інтернету. Перевірте з'єднання та спробуйте ще раз."
         }
     }
 }
@@ -527,6 +527,9 @@ struct JobDTO: Decodable {
     let companyEdrpou: String?
     let companyVerified: Bool?
     let aiVerified: Bool?
+    let source: String?
+    let externalUrl: String?
+    let isExternal: Bool?
     let matchScore: Int?
     let matchReason: String?
     let matchSource: String?
@@ -567,7 +570,9 @@ struct JobDTO: Decodable {
             isUrgent: false,
             status: JobStatus(rawValue: status ?? "active") ?? .active,
             applicationsCount: applicationsCount ?? 0,
-            aiVerified: aiVerified ?? true,
+            aiVerified: aiVerified ?? false,
+            source: source ?? (isExternal == true ? "dou" : "internal"),
+            externalURL: externalUrl ?? "",
             matchScore: matchScore,
             matchReason: matchReason,
             matchSource: matchSource

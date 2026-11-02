@@ -268,6 +268,8 @@ function buildSeedJobs() {
 }
 
 function seedDatabase(db) {
+  // Production starts empty. Set SEED_DEMO_DATA=1 only for a local demo database.
+  if (process.env.SEED_DEMO_DATA !== '1') return;
   const versionRow = db.prepare("SELECT value FROM app_meta WHERE key = 'seed_version'").get();
   if (versionRow && versionRow.value === SEED_VERSION) return;
 

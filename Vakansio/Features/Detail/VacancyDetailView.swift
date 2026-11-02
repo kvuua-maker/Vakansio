@@ -39,7 +39,7 @@ struct VacancyDetailView: View {
                 bulletCard(title: "Вимоги", icon: "checkmark.circle", items: vacancy.requirements)
                 bulletCard(title: "Ми пропонуємо", icon: "gift.fill", items: vacancy.benefits)
 
-                if !isOwnVacancy {
+                if !isOwnVacancy && !vacancy.isExternal {
                     writeButton
                 }
 
@@ -353,7 +353,9 @@ struct VacancyDetailView: View {
                 .foregroundStyle(VK.textTertiary)
                 .padding(.top, 1)
 
-            Text("Vakansio перевірив компанію та вакансію. Не надсилайте передоплату роботодавцю.")
+            Text(vacancy.isExternal
+                 ? "Це зовнішня вакансія з \(vacancy.sourceLabel). Vakansio не є роботодавцем — перевіряйте умови та оплату на сайті джерела."
+                 : "Vakansio перевірив компанію та вакансію. Не надсилайте передоплату роботодавцю.")
                 .font(.system(size: 11))
                 .foregroundStyle(VK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -384,7 +386,9 @@ struct VacancyDetailView: View {
 
                 Spacer(minLength: 4)
 
-                if let application = appliedApplication {
+                if vacancy.isExternal {
+                    externalActionButton
+                } else if let application = appliedApplication {
                     appliedBadge(for: application)
                 } else if vacancy.status == .pending {
                     HStack(spacing: 7) {
@@ -433,6 +437,29 @@ struct VacancyDetailView: View {
             .padding(.bottom, 6)
         }
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var externalActionButton: some View {
+        if let url = URL(string: vacancy.externalURL) {
+            Link(destination: url) {
+                HStack(spacing: 7) {
+                    Image(systemName: "safari.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Відкрити на \(vacancy.sourceLabel.isEmpty ? "сайті" : vacancy.sourceLabel)")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 16)
+                .frame(height: 50)
+                .background(VK.accentGradient, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(PressableButtonStyle())
+        } else {
+            Text("Джерело недоступне")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VK.textSecondary)
+        }
     }
 
     private var isOwnVacancy: Bool {
