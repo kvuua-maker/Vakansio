@@ -357,6 +357,57 @@ jobs:
           xcrun altool --upload-app -f "$IPA" -t ios \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log
 
+      - name: Verify TestFlight processing
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          curl -s -o "$RUNNER_TEMP/apps.json" -H "Authorization: Bearer $ASC_TOKEN" \
+            "$API/apps?filter%5BbundleId%5D=$APP_BUNDLE&limit=10"
+
+          APP_ID=$(node -e '
+            const fs=require("fs");
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/apps.json","utf8"));
+            const a=(d.data||[])[0];
+            if(!a){console.error("App record not found");process.exit(4)}
+            process.stdout.write(a.id);
+          ')
+          echo "App Store Connect app id: $APP_ID"
+
+          STATE=""
+          for i in $(seq 1 18); do
+            curl -s -o "$RUNNER_TEMP/builds.json" -H "Authorization: Bearer $ASC_TOKEN" \
+              "$API/builds?filter%5Bapp%5D=$APP_ID&limit=20"
+
+            STATE=$(node -e '
+              const fs=require("fs");
+              const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/builds.json","utf8"));
+              const target=process.env.BUILD_NUMBER;
+              const b=(d.data||[]).find(x=>x.attributes.version===target);
+              if(!b){process.stdout.write("NONE");process.exit(0)}
+              fs.writeFileSync(process.env.RUNNER_TEMP+"/build-info.txt",
+                "build "+b.attributes.version+" | "+b.attributes.processingState+" | uploaded "+(b.attributes.uploadedDate||"?"));
+              process.stdout.write(b.attributes.processingState||"UNKNOWN");
+            ')
+
+            cat "$RUNNER_TEMP/build-info.txt" 2>/dev/null || true
+            echo "[$i] TestFlight state: $STATE"
+
+            if [ "$STATE" = "VALID" ]; then
+              echo "::notice::Build $BUILD_NUMBER is VALID in TestFlight"
+              exit 0
+            fi
+            if [ "$STATE" = "FAILED" ] || [ "$STATE" = "INVALID" ]; then
+              echo "::error::TestFlight processing ended with $STATE"
+              cat "$RUNNER_TEMP/builds.json"
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+          echo "::warning::Build $BUILD_NUMBER is still processing; check TestFlight in a few minutes."
+
       - name: Clean up signing material
         if: always()
         run: |
