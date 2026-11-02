@@ -1,0 +1,18 @@
+[Unit]
+Description=Vakansio API (Node.js + SQLite)
+After=network.target
+
+[Service]
+Type=simple
+User=vakansio
+Group=vakansio
+WorkingDirectory=/opt/vakansio
+EnvironmentFile=/opt/vakansio/.env
+ExecStart=/usr/bin/node /opt/vakansio/server.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

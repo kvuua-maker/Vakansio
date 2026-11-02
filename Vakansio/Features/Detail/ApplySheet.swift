@@ -187,11 +187,12 @@ struct ApplySheet: View {
         isEditorFocused = false
         isSubmitting = true
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-            app.apply(to: vacancy, coverLetter: letter)
+        Task {
+            let success = await app.apply(to: vacancy, coverLetter: letter)
             isSubmitting = false
-            dismiss()
-            app.showToast("Відгук надіслано! Стежте за статусом", icon: "paperplane.fill", style: .success)
+            if success {
+                dismiss()
+            }
         }
     }
 }

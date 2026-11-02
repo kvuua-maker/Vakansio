@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UIKit
 
 struct CreateVacancyView: View {
     @EnvironmentObject private var app: AppState
@@ -8,33 +9,41 @@ struct CreateVacancyView: View {
 
     var showsCloseButton: Bool = false
 
-    @State private var path = NavigationPath()
+    @State private var title = ""
+    @State private var city = "Київ"
+    @State private var salaryMin = ""
+    @State private var salaryMax = ""
+    @State private var category = "IT"
+    @State private var description = ""
+    @State private var requirements = ""
+    @State private var showSuccess = false
+    @State private var createdJob: Vacancy?
+
+    private var canSubmit: Bool {
+        !app.isSavingJob
+            && app.canCreateVacancy
+            && !title.vkTrimmed.isEmpty
+            && description.vkTrimmed.count >= 20
+    }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            ZStack {
-                VK.screen.ignoresSafeArea()
+        ZStack {
+            VK.screen.ignoresSafeArea()
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        header
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
 
-                        if !app.canCreateVacancy {
-                            limitBanner
-                        }
-
-                        methodGrid
-                        aiTip
-                        statsHint
+                    if !app.canCreateVacancy {
+                        limitBanner
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 28)
+
+                    formCard
+                    moderationHint
                 }
-            }
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: CreationMethod.self) { method in
-                VacancyFormView(method: method)
+                .padding(.horizontal, 16)
+                .padding(.top, showsCloseButton ? 44 : 8)
+                .padding(.bottom, 24)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -55,6 +64,16 @@ struct CreateVacancyView: View {
                 .accessibilityLabel("Закрити")
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            submitBar
+        }
+        .alert("Вакансію надіслано", isPresented: $showSuccess) {
+            Button("До дашборду") {
+                finish()
+            }
+        } message: {
+            Text("Статус: \((createdJob?.status ?? .pending).title). Вакансія з'явиться у стрічці після перевірки — зазвичай до однієї хвилини.")
+        }
     }
 
     // MARK: Header
@@ -65,91 +84,11 @@ struct CreateVacancyView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(VK.textPrimary)
 
-            Text("Оберіть спосіб створення — решту зробимо ми")
+            Text("Заповніть форму — вакансія одразу піде на модерацію")
                 .font(.system(size: 13))
                 .foregroundStyle(VK.textSecondary)
         }
-        .padding(.top, showsCloseButton ? 44 : 4)
     }
-
-    // MARK: Methods
-
-    private var methodGrid: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12)
-            ],
-            spacing: 12
-        ) {
-            ForEach(CreationMethod.allCases) { method in
-                NavigationLink(value: method) {
-                    methodCard(method)
-                }
-                .buttonStyle(PressableCardStyle())
-            }
-        }
-    }
-
-    private func methodCard(_ method: CreationMethod) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .fill(method.tint.opacity(0.12))
-                        .frame(width: 46, height: 46)
-
-                    Image(systemName: method.icon)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(method.tint)
-                }
-
-                Spacer(minLength: 4)
-
-                if let badge = method.badge {
-                    Text(badge)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(method.tint)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(method.tint.opacity(0.12), in: Capsule())
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(method.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(VK.textPrimary)
-
-                Text(method.subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(VK.textSecondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 4) {
-                Text("Обрати")
-                    .font(.system(size: 11, weight: .semibold))
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(method.tint)
-        }
-        .frame(maxWidth: .infinity, minHeight: 164, alignment: .topLeading)
-        .padding(14)
-        .background(VK.card)
-        .clipShape(RoundedRectangle(cornerRadius: VK.radius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: VK.radius, style: .continuous)
-                .strokeBorder(VK.hairline, lineWidth: 1)
-        )
-    }
-
-    // MARK: Extras
 
     private var limitBanner: some View {
         HStack(spacing: 10) {
@@ -181,41 +120,179 @@ struct CreateVacancyView: View {
         )
     }
 
-    private var aiTip: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(VK.warning)
+    // MARK: Form
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Порада")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(VK.textPrimary)
+    private var formCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            LabeledField(
+                label: "Назва вакансії",
+                placeholder: "Наприклад, Middle iOS Developer",
+                text: $title,
+                icon: "briefcase"
+            )
 
-                Text("AI-помічник напише опис вакансії за 30 секунд — достатньо вказати посаду та ключові навички.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(VK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            LabeledField(
+                label: "Місто",
+                placeholder: "Київ",
+                text: $city,
+                icon: "mappin.and.ellipse"
+            )
+
+            HStack(alignment: .top, spacing: 10) {
+                LabeledField(
+                    label: "Зарплата від",
+                    placeholder: "30000",
+                    text: $salaryMin,
+                    icon: "banknote"
+                )
+                .keyboardType(.numberPad)
+                .frame(maxWidth: .infinity)
+
+                LabeledField(
+                    label: "до",
+                    placeholder: "50000",
+                    text: $salaryMax,
+                    icon: "banknote"
+                )
+                .keyboardType(.numberPad)
+                .frame(maxWidth: .infinity)
             }
 
-            Spacer(minLength: 0)
+            categoryPicker
+
+            LabeledTextEditor(
+                label: "Опис вакансії",
+                placeholder: "Розкажіть про продукт, команду та задачі (мінімум 20 символів)",
+                text: $description,
+                minHeight: 140
+            )
+
+            LabeledTextEditor(
+                label: "Вимоги",
+                placeholder: "Кожна вимога з нового рядка",
+                text: $requirements,
+                minHeight: 110
+            )
         }
-        .vkCard(padding: 14)
+        .vkCard()
     }
 
-    private var statsHint: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(VK.brand)
-
-            Text("Вакансії з детальним описом отримують у 2,4 раза більше відгуків.")
-                .font(.system(size: 12))
+    private var categoryPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Категорія")
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(VK.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
 
-            Spacer(minLength: 0)
+            Menu {
+                ForEach(FilterOptions.categories, id: \.self) { item in
+                    Button(item) {
+                        category = item
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(category)
+                        .font(.system(size: 16))
+                        .foregroundStyle(VK.textPrimary)
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.textTertiary)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 48)
+                .background(VK.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(VK.hairline, lineWidth: 1)
+                )
+            }
+        }
+    }
+
+    private var moderationHint: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "clock.badge.checkmark")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VK.brand)
+                .padding(.top, 1)
+
+            Text("Після публікації вакансія матиме статус «На модерації». Кандидати побачать її у стрічці після перевірки.")
+                .font(.system(size: 11))
+                .foregroundStyle(VK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 4)
+    }
+
+    private var submitBar: some View {
+        VStack(spacing: 0) {
+            Divider().overlay(VK.hairline)
+
+            PrimaryButton(
+                title: "Опублікувати вакансію",
+                icon: "paperplane.fill",
+                isLoading: app.isSavingJob,
+                isEnabled: canSubmit
+            ) {
+                submit()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+        }
+        .background(.regularMaterial)
+    }
+
+    // MARK: Actions
+
+    private func submit() {
+        guard canSubmit else { return }
+
+        let minSalary = Int(salaryMin.vkTrimmed) ?? 0
+        let maxSalary = max(minSalary, Int(salaryMax.vkTrimmed) ?? minSalary)
+        let requirementsList = requirements
+            .components(separatedBy: "\n")
+            .map { $0.vkTrimmed }
+            .filter { !$0.isEmpty }
+
+        Task {
+            let job = await app.createJob(
+                title: title.vkTrimmed,
+                description: description.vkTrimmed,
+                salaryMin: minSalary,
+                salaryMax: maxSalary,
+                city: city.vkTrimmed.isEmpty ? "Київ" : city.vkTrimmed,
+                category: category,
+                requirements: requirementsList
+            )
+
+            if let job {
+                createdJob = job
+                showSuccess = true
+            }
+        }
+    }
+
+    private func finish() {
+        reset()
+        if showsCloseButton {
+            dismiss()
+        } else {
+            router.selection = 0
+        }
+    }
+
+    private func reset() {
+        title = ""
+        city = "Київ"
+        salaryMin = ""
+        salaryMax = ""
+        category = "IT"
+        description = ""
+        requirements = ""
+        createdJob = nil
     }
 }

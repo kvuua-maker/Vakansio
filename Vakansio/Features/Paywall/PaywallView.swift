@@ -18,7 +18,7 @@ struct PaywallView: View {
         if selected.price == 0 {
             return "Перейти на Старт"
         }
-        return "Підписатися за \(selected.priceText)"
+        return "Активувати тариф «\(selected.name)»"
     }
 
     var body: some View {
@@ -32,7 +32,6 @@ struct PaywallView: View {
                         currentTierNote
                         plans
                         featuresCard
-                        restoreButton
                         legal
                     }
                     .padding(.horizontal, 16)
@@ -246,19 +245,8 @@ struct PaywallView: View {
         .vkCard()
     }
 
-    private var restoreButton: some View {
-        Button {
-            app.showToast("Активних покупок не знайдено", icon: "arrow.clockwise", style: .info)
-        } label: {
-            Text("Відновити покупки")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(VK.brand)
-        }
-        .buttonStyle(.plain)
-    }
-
     private var legal: some View {
-        Text("Підписка автоматично поновлюється щомісяця. Скасувати можна в налаштуваннях Apple ID не пізніше ніж за 24 години до кінця періоду.")
+        Text("Тариф змінює ліміт активних вакансій у застосунку. Це прототип тарифікації без реального списання коштів.")
             .font(.system(size: 10))
             .foregroundStyle(VK.textTertiary)
             .multilineTextAlignment(.center)
@@ -281,7 +269,7 @@ struct PaywallView: View {
                 purchase()
             }
 
-            Text("Оплата з вашого Apple ID. Скасувати можна в будь-який момент.")
+            Text("Активація діє в межах застосунку.")
                 .font(.system(size: 10))
                 .foregroundStyle(VK.textTertiary)
         }

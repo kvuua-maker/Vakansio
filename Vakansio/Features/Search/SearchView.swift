@@ -9,12 +9,7 @@ struct SearchView: View {
     @State private var selectedCity: String? = nil
     @State private var selectedCategory: String? = nil
     @State private var showFilters = false
-    @State private var isLoading = true
-    @State private var hasLoaded = false
-
-    private var categories: [String] {
-        MockData.categories
-    }
+    @FocusState private var isSearchFocused: Bool
 
     private var activeFilterCount: Int {
         var count = 0
@@ -26,7 +21,7 @@ struct SearchView: View {
     private var results: [Vacancy] {
         let text = query.vkTrimmed.lowercased()
 
-        return app.vacancies.filter { vacancy in
+        return app.jobs.filter { vacancy in
             let matchesQuery = text.isEmpty
                 || vacancy.title.lowercased().contains(text)
                 || vacancy.company.name.lowercased().contains(text)
@@ -60,8 +55,19 @@ struct SearchView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 28)
                 }
+                .scrollDismissesKeyboard(.immediately)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Готово") {
+                        isSearchFocused = false
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+                }
+            }
             .navigationDestination(for: Vacancy.self) { vacancy in
                 VacancyDetailView(vacancy: vacancy)
             }
@@ -71,11 +77,9 @@ struct SearchView: View {
                 .presentationDetents([.large])
         }
         .task {
-            guard !hasLoaded else { return }
-            hasLoaded = true
-            isLoading = true
-            try? await Task.sleep(nanoseconds: 650_000_000)
-            isLoading = false
+            if app.jobs.isEmpty {
+                await app.loadJobs()
+            }
         }
     }
 
@@ -96,9 +100,12 @@ struct SearchView: View {
 
     private var searchRow: some View {
         HStack(spacing: 10) {
-            SearchField(text: $query)
+            SearchField(text: $query, focus: $isSearchFocused) {
+                isSearchFocused = false
+            }
 
             Button {
+                isSearchFocused = false
                 showFilters = true
             } label: {
                 ZStack {
@@ -135,7 +142,7 @@ struct SearchView: View {
             HStack(spacing: 8) {
                 cityMenu
 
-                ForEach(categories, id: \.self) { category in
+                ForEach(FilterOptions.categories, id: \.self) { category in
                     FilterChip(
                         title: category,
                         isSelected: selectedCategory == category
@@ -153,7 +160,7 @@ struct SearchView: View {
     private var cityMenu: some View {
         Menu {
             Button("Усі міста") { selectedCity = nil }
-            ForEach(MockData.cities, id: \.self) { city in
+            ForEach(FilterOptions.cities, id: \.self) { city in
                 Button {
                     selectedCity = city
                 } label: {
@@ -216,12 +223,23 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        if app.isLoadingJobs && app.jobs.isEmpty {
             VStack(spacing: 12) {
                 ForEach(0..<3, id: \.self) { _ in
                     SkeletonVacancyCard()
                 }
             }
+        } else if app.jobs.isEmpty {
+            EmptyStateView(
+                icon: "wifi.exclamationmark",
+                title: "Немає даних",
+                message: app.lastErrorMessage ?? "Вакансії ще не завантажені.",
+                actionTitle: "Спробувати ще",
+                action: {
+                    Task { await app.loadJobs() }
+                }
+            )
+            .vkCard()
         } else {
             HStack(alignment: .firstTextBaseline) {
                 Text("Результати")
@@ -297,7 +315,7 @@ struct SearchFiltersSheet: View {
                                 city = nil
                             }
 
-                            ForEach(MockData.cities, id: \.self) { item in
+                            ForEach(FilterOptions.cities, id: \.self) { item in
                                 choiceButton(item, isSelected: city == item) {
                                     city = item
                                 }
@@ -315,7 +333,7 @@ struct SearchFiltersSheet: View {
                                 category = nil
                             }
 
-                            ForEach(MockData.categories, id: \.self) { item in
+                            ForEach(FilterOptions.categories, id: \.self) { item in
                                 choiceButton(item, isSelected: category == item) {
                                     category = item
                                 }

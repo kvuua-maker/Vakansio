@@ -63,10 +63,44 @@ struct Company: Identifiable, Hashable {
     }
 }
 
+// MARK: - Job status
+
+enum JobStatus: String, CaseIterable, Identifiable, Codable, Hashable {
+    case pending
+    case active
+    case closed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pending: return "На модерації"
+        case .active: return "Активна"
+        case .closed: return "Закрита"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .pending: return "clock.fill"
+        case .active: return "checkmark.circle.fill"
+        case .closed: return "xmark.circle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .pending: return VK.warning
+        case .active: return VK.success
+        case .closed: return VK.textSecondary
+        }
+    }
+}
+
 // MARK: - Vacancy
 
 struct Vacancy: Identifiable, Hashable {
-    let id: UUID
+    let id: String
     var title: String
     var company: Company
     var salaryMin: Int
@@ -87,9 +121,11 @@ struct Vacancy: Identifiable, Hashable {
     var postedAt: Date
     var isVerified: Bool
     var isUrgent: Bool
+    var status: JobStatus
+    var applicationsCount: Int
 
     init(
-        id: UUID = UUID(),
+        id: String,
         title: String,
         company: Company,
         salaryMin: Int,
@@ -109,7 +145,9 @@ struct Vacancy: Identifiable, Hashable {
         contactPhone: String? = nil,
         postedAt: Date = Date(),
         isVerified: Bool = true,
-        isUrgent: Bool = false
+        isUrgent: Bool = false,
+        status: JobStatus = .active,
+        applicationsCount: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -132,6 +170,8 @@ struct Vacancy: Identifiable, Hashable {
         self.postedAt = postedAt
         self.isVerified = isVerified
         self.isUrgent = isUrgent
+        self.status = status
+        self.applicationsCount = applicationsCount
     }
 
     var salaryText: String {
@@ -150,6 +190,10 @@ struct Vacancy: Identifiable, Hashable {
 
     var postedText: String {
         postedAt.vkRelativeDay
+    }
+
+    var isActive: Bool {
+        status == .active
     }
 }
 
@@ -192,24 +236,108 @@ enum ApplicationStatus: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct Application: Identifiable, Hashable {
-    let id: UUID
+    let id: String
     let vacancy: Vacancy
     var status: ApplicationStatus
     let appliedAt: Date
     var coverLetter: String
+    var resumeText: String
+    var candidateName: String
+    var candidateEmail: String
+    var candidatePhotoBase64: String?
+    var aiScore: Int
+    var aiSummary: String
 
     init(
-        id: UUID = UUID(),
+        id: String,
         vacancy: Vacancy,
         status: ApplicationStatus = .sent,
         appliedAt: Date = Date(),
-        coverLetter: String = ""
+        coverLetter: String = "",
+        resumeText: String = "",
+        candidateName: String = "",
+        candidateEmail: String = "",
+        candidatePhotoBase64: String? = nil,
+        aiScore: Int = 0,
+        aiSummary: String = ""
     ) {
         self.id = id
         self.vacancy = vacancy
         self.status = status
         self.appliedAt = appliedAt
         self.coverLetter = coverLetter
+        self.resumeText = resumeText
+        self.candidateName = candidateName
+        self.candidateEmail = candidateEmail
+        self.candidatePhotoBase64 = candidatePhotoBase64
+        self.aiScore = aiScore
+        self.aiSummary = aiSummary
+    }
+
+    var candidateInitials: String {
+        let name = candidateName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "?" }
+        return name.vkInitials
+    }
+}
+
+// MARK: - Profile
+
+struct UserProfile: Hashable {
+    var id: String
+    var name: String
+    var email: String
+    var photoBase64: String?
+    var headline: String
+    var about: String
+    var skills: String
+    var city: String
+}
+
+struct ResumeProfile: Hashable {
+    var photoBase64: String?
+    var hasPDF: Bool = false
+    var headline: String = "iOS Developer"
+    var about: String = "Продуктовий розробник з досвідом створення мобільних застосунків. Люблю чистий код і швидкі інтерфейси."
+    var skills: String = "Swift, SwiftUI, Combine, REST, Git"
+    var city: String = "Київ"
+
+    var hasPhoto: Bool {
+        !(photoBase64 ?? "").isEmpty
+    }
+
+    var completeness: Double {
+        var score = 0.30
+        if hasPhoto { score += 0.20 }
+        if hasPDF { score += 0.20 }
+        if !headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 0.10 }
+        if !about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 0.10 }
+        if !skills.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 0.10 }
+        return min(score, 1.0)
+    }
+
+    var completenessPercent: Int {
+        Int((completeness * 100).rounded())
+    }
+
+    var resumeText: String {
+        [headline, about, skills, city]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    var asProfile: UserProfile {
+        UserProfile(
+            id: "",
+            name: "",
+            email: "",
+            photoBase64: photoBase64,
+            headline: headline,
+            about: about,
+            skills: skills,
+            city: city
+        )
     }
 }
 
@@ -309,32 +437,6 @@ enum SubscriptionTier: String, CaseIterable, Identifiable, Hashable {
     var isPopular: Bool { self == .pro }
 }
 
-// MARK: - Resume
-
-struct ResumeProfile: Hashable {
-    var hasPhoto: Bool = false
-    var hasPDF: Bool = false
-    var diiaImported: Bool = false
-    var headline: String = "iOS Developer"
-    var about: String = "Продуктовий розробник з 4 роками досвіду. Люблю чистий код і швидкі інтерфейси."
-    var skills: String = "Swift, SwiftUI, Combine, REST, Git"
-    var city: String = "Київ"
-
-    var completeness: Double {
-        var score = 0.3
-        if hasPhoto { score += 0.15 }
-        if hasPDF { score += 0.2 }
-        if diiaImported { score += 0.2 }
-        if !headline.isEmpty { score += 0.075 }
-        if !skills.isEmpty { score += 0.075 }
-        return min(score, 1.0)
-    }
-
-    var completenessPercent: Int {
-        Int((completeness * 100).rounded())
-    }
-}
-
 // MARK: - Appearance
 
 enum ThemePreference: String, CaseIterable, Identifiable, Hashable {
@@ -396,61 +498,5 @@ struct ToastMessage: Identifiable, Equatable {
         self.text = text
         self.icon = icon
         self.style = style
-    }
-}
-
-// MARK: - Vacancy creation
-
-enum CreationMethod: String, CaseIterable, Identifiable, Hashable {
-    case manual
-    case url
-    case pdf
-    case ai
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .manual: return "Вручну"
-        case .url: return "З URL"
-        case .pdf: return "З PDF"
-        case .ai: return "AI-помічник"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .manual: return "Заповніть форму самостійно"
-        case .url: return "Вставимо текст з посилання"
-        case .pdf: return "Розпізнаємо файл вакансії"
-        case .ai: return "Опишіть ідею — ми напишемо"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .manual: return "square.and.pencil"
-        case .url: return "link"
-        case .pdf: return "doc.text.fill"
-        case .ai: return "sparkles"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .manual: return VK.brand
-        case .url: return Color(hex: 0x5856D6)
-        case .pdf: return VK.danger
-        case .ai: return VK.warning
-        }
-    }
-
-    var badge: String? {
-        switch self {
-        case .manual: return nil
-        case .url: return "Швидко"
-        case .pdf: return "Розпізнавання"
-        case .ai: return "AI"
-        }
     }
 }

@@ -60,7 +60,7 @@ struct OnboardingView: View {
             HStack(spacing: 12) {
                 feature(icon: "checkmark.seal.fill", title: "Перевірені\nкомпанії")
                 feature(icon: "bolt.fill", title: "Відгук\nза 1 хвилину")
-                feature(icon: "sparkles", title: "AI-помічник\nдля резюме")
+                feature(icon: "photo.on.rectangle.angled", title: "Фото та PDF\nу резюме")
             }
             .padding(.top, 8)
         }

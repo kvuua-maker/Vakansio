@@ -1,0 +1,430 @@
+import Foundation
+
+// MARK: - Configuration
+
+enum APIConfig {
+    static let fallbackBaseURL = "http://178.105.32.46:8090"
+
+    static var baseURLString: String {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "VakansioAPIBaseURL") as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return fallbackBaseURL
+    }
+
+    static var internalToken: String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "VakansioInternalToken") as? String else {
+            return ""
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// MARK: - Errors
+
+enum APIError: LocalizedError {
+    case missingConfiguration(String)
+    case invalidResponse
+    case unauthorized
+    case notFound
+    case server(String)
+    case transport(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingConfiguration(let message):
+            return message
+        case .invalidResponse:
+            return "Сервер повернув некоректну відповідь"
+        case .unauthorized:
+            return "Немає доступу до API. Перевірте внутрішній токен."
+        case .notFound:
+            return "Дані не знайдено"
+        case .server(let message):
+            return message
+        case .transport(let message):
+            return "Немає зв'язку з сервером: \(message)"
+        }
+    }
+}
+
+// MARK: - Client
+
+struct APIClient {
+    static let shared = APIClient()
+
+    private let session: URLSession
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init() {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 25
+        configuration.timeoutIntervalForResource = 40
+        configuration.waitsForConnectivity = true
+        session = URLSession(configuration: configuration)
+    }
+
+    // MARK: Public endpoints
+
+    func fetchJobs() async throws -> [Vacancy] {
+        let dtos: [JobDTO] = try await get(path: "/v1/jobs")
+        return dtos.map { $0.toModel() }
+    }
+
+    func fetchEmployerJobs(employerId: String) async throws -> [Vacancy] {
+        let dtos: [JobDTO] = try await get(
+            path: "/v1/jobs/employer",
+            query: [URLQueryItem(name: "employerId", value: employerId)]
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func createJob(_ body: CreateJobRequest) async throws -> Vacancy {
+        let dto: JobDTO = try await post(path: "/v1/jobs", body: body)
+        return dto.toModel()
+    }
+
+    func fetchMyApplications(userId: String) async throws -> [Application] {
+        let dtos: [ApplicationDTO] = try await get(
+            path: "/v1/applications/my",
+            query: [URLQueryItem(name: "userId", value: userId)]
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func fetchEmployerApplications(employerId: String) async throws -> [Application] {
+        let dtos: [ApplicationDTO] = try await get(
+            path: "/v1/applications/employer",
+            query: [URLQueryItem(name: "employerId", value: employerId)]
+        )
+        return dtos.map { $0.toModel() }
+    }
+
+    func createApplication(_ body: CreateApplicationRequest) async throws -> Application {
+        let dto: ApplicationDTO = try await post(path: "/v1/applications", body: body)
+        return dto.toModel()
+    }
+
+    func markApplicationsViewed(employerId: String) async throws {
+        let _: MarkViewedResponse = try await post(
+            path: "/v1/applications/mark-viewed",
+            body: MarkViewedRequest(employerId: employerId)
+        )
+    }
+
+    func updateApplicationStatus(
+        applicationId: String,
+        employerId: String,
+        status: ApplicationStatus
+    ) async throws -> Application {
+        let dto: ApplicationDTO = try await post(
+            path: "/v1/applications/\(applicationId)/status",
+            body: StatusUpdateRequest(employerId: employerId, status: status.rawValue)
+        )
+        return dto.toModel()
+    }
+
+    func fetchProfile(userId: String) async throws -> UserProfile? {
+        do {
+            let dto: ProfileDTO = try await get(
+                path: "/v1/profile",
+                query: [URLQueryItem(name: "userId", value: userId)]
+            )
+            return dto.toModel()
+        } catch APIError.notFound {
+            return nil
+        }
+    }
+
+    func saveProfile(_ body: UpdateProfileRequest) async throws -> UserProfile {
+        let dto: ProfileDTO = try await post(path: "/v1/profile", body: body)
+        return dto.toModel()
+    }
+
+    func deleteProfile(userId: String) async throws {
+        let _: DeleteResponse = try await delete(
+            path: "/v1/profile",
+            query: [URLQueryItem(name: "userId", value: userId)]
+        )
+    }
+
+    // MARK: Request building
+
+    private func makeRequest(
+        path: String,
+        method: String,
+        query: [URLQueryItem],
+        body: Data?
+    ) throws -> URLRequest {
+        let token = APIConfig.internalToken
+        guard !token.isEmpty else {
+            throw APIError.missingConfiguration(
+                "Не налаштовано внутрішній токен API (VakansioInternalToken)."
+            )
+        }
+
+        guard var components = URLComponents(string: APIConfig.baseURLString) else {
+            throw APIError.missingConfiguration("Некоректна адреса API.")
+        }
+
+        components.path = path
+        components.queryItems = query.isEmpty ? nil : query
+
+        guard let url = components.url else {
+            throw APIError.missingConfiguration("Не вдалося побудувати URL запиту.")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 25
+        request.setValue(token, forHTTPHeaderField: "x-internal-token")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        return request
+    }
+
+    private func get<T: Decodable>(path: String, query: [URLQueryItem] = []) async throws -> T {
+        let request = try makeRequest(path: path, method: "GET", query: query, body: nil)
+        return try await execute(request)
+    }
+
+    private func post<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
+        let data = try encoder.encode(body)
+        let request = try makeRequest(path: path, method: "POST", query: [], body: data)
+        return try await execute(request)
+    }
+
+    private func delete<T: Decodable>(path: String, query: [URLQueryItem]) async throws -> T {
+        let request = try makeRequest(path: path, method: "DELETE", query: query, body: nil)
+        return try await execute(request)
+    }
+
+    private func execute<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.transport(error.localizedDescription)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        switch http.statusCode {
+        case 200..<300:
+            break
+        case 401:
+            throw APIError.unauthorized
+        case 404:
+            throw APIError.notFound
+        default:
+            let message = (try? decoder.decode(ServerError.self, from: data))?.error
+            throw APIError.server(message ?? "Помилка сервера (\(http.statusCode))")
+        }
+
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIError.server("Не вдалося прочитати відповідь сервера.")
+        }
+    }
+}
+
+// MARK: - Requests
+
+struct CreateJobRequest: Encodable {
+    let employerId: String
+    let title: String
+    let companyName: String
+    let description: String
+    let salaryMin: Int
+    let salaryMax: Int
+    let city: String
+    let category: String
+    let requirements: [String]
+    let benefits: [String]
+    let contactEmail: String
+}
+
+struct CreateApplicationRequest: Encodable {
+    let jobId: String
+    let userId: String
+    let name: String
+    let email: String
+    let resumeText: String
+    let coverLetter: String
+    let photoBase64: String?
+}
+
+struct UpdateProfileRequest: Encodable {
+    let id: String
+    let name: String
+    let email: String
+    let photoBase64: String?
+    let headline: String
+    let about: String
+    let skills: String
+    let city: String
+}
+
+private struct StatusUpdateRequest: Encodable {
+    let employerId: String
+    let status: String
+}
+
+private struct MarkViewedRequest: Encodable {
+    let employerId: String
+}
+
+private struct MarkViewedResponse: Decodable {
+    let updated: Int?
+}
+
+private struct DeleteResponse: Decodable {
+    let deleted: Bool?
+}
+
+private struct ServerError: Decodable {
+    let error: String?
+}
+
+// MARK: - DTOs
+
+struct JobDTO: Decodable {
+    let id: String
+    let employerId: String?
+    let title: String
+    let companyName: String?
+    let description: String?
+    let summary: String?
+    let salaryMin: Int?
+    let salaryMax: Int?
+    let city: String?
+    let category: String?
+    let isRemote: Bool?
+    let employmentType: String?
+    let experience: String?
+    let requirements: [String]?
+    let benefits: [String]?
+    let contactEmail: String?
+    let status: String?
+    let verified: Bool?
+    let applicationsCount: Int?
+    let createdAt: String?
+
+    func toModel() -> Vacancy {
+        let company = Company(
+            name: companyName ?? "Компанія",
+            isVerified: verified ?? false,
+            industry: category ?? "IT"
+        )
+        let salaryMin = self.salaryMin ?? 0
+        let salaryMax = self.salaryMax ?? 0
+        let description = self.description ?? ""
+        let postedAt = APIDateParser.date(from: createdAt) ?? Date()
+
+        return Vacancy(
+            id: id,
+            title: title,
+            company: company,
+            salaryMin: salaryMin,
+            salaryMax: salaryMax,
+            city: city ?? "Україна",
+            isRemote: isRemote ?? false,
+            category: category ?? "IT",
+            employmentType: employmentType ?? "Повна зайнятість",
+            experience: experience ?? "1–3 роки",
+            summary: summary ?? String(description.prefix(160)),
+            description: description,
+            responsibilities: [],
+            requirements: requirements ?? [],
+            benefits: benefits ?? [],
+            contactEmail: contactEmail ?? "hr@vakansio.app",
+            contactPhone: nil,
+            postedAt: postedAt,
+            isVerified: verified ?? false,
+            isUrgent: false,
+            status: JobStatus(rawValue: status ?? "active") ?? .active,
+            applicationsCount: applicationsCount ?? 0
+        )
+    }
+}
+
+struct ApplicationDTO: Decodable {
+    let id: String
+    let status: String?
+    let candidateName: String?
+    let candidateEmail: String?
+    let photoBase64: String?
+    let resumeText: String?
+    let coverLetter: String?
+    let aiScore: Int?
+    let aiSummary: String?
+    let createdAt: String?
+    let job: JobDTO
+
+    func toModel() -> Application {
+        Application(
+            id: id,
+            vacancy: job.toModel(),
+            status: ApplicationStatus(rawValue: status ?? "sent") ?? .sent,
+            appliedAt: APIDateParser.date(from: createdAt) ?? Date(),
+            coverLetter: coverLetter ?? "",
+            resumeText: resumeText ?? "",
+            candidateName: candidateName ?? "",
+            candidateEmail: candidateEmail ?? "",
+            candidatePhotoBase64: photoBase64,
+            aiScore: aiScore ?? 0,
+            aiSummary: aiSummary ?? ""
+        )
+    }
+}
+
+struct ProfileDTO: Decodable {
+    let id: String
+    let name: String?
+    let email: String?
+    let photoBase64: String?
+    let headline: String?
+    let about: String?
+    let skills: String?
+    let city: String?
+
+    func toModel() -> UserProfile {
+        UserProfile(
+            id: id,
+            name: name ?? "",
+            email: email ?? "",
+            photoBase64: photoBase64,
+            headline: headline ?? "",
+            about: about ?? "",
+            skills: skills ?? "",
+            city: city ?? ""
+        )
+    }
+}
+
+enum APIDateParser {
+    static func date(from value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+}

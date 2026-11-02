@@ -23,8 +23,6 @@ struct ApplicationsView: View {
 
     @State private var path = NavigationPath()
     @State private var filter: ApplicationFilter = .all
-    @State private var isLoading = true
-    @State private var hasLoaded = false
 
     private var filteredApplications: [Application] {
         switch filter {
@@ -53,22 +51,18 @@ struct ApplicationsView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 16) {
                         header
-                        stats
 
-                        if isLoading {
+                        if app.isLoadingApplications && app.applications.isEmpty {
+                            stats
+
                             ForEach(0..<3, id: \.self) { _ in
                                 SkeletonApplicationRow()
                             }
                         } else if app.applications.isEmpty {
-                            EmptyStateView(
-                                icon: "paperplane",
-                                title: "Відгуків поки немає",
-                                message: "Знайдіть вакансію до душі у стрічці та надішліть перший відгук.",
-                                actionTitle: "До стрічки",
-                                action: { router.selection = 0 }
-                            )
-                            .vkCard()
+                            stats
+                            emptyState
                         } else {
+                            stats
                             filters
                             list
                         }
@@ -77,6 +71,9 @@ struct ApplicationsView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 28)
                 }
+                .refreshable {
+                    await app.loadMyApplications()
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Vacancy.self) { vacancy in
@@ -84,11 +81,7 @@ struct ApplicationsView: View {
             }
         }
         .task {
-            guard !hasLoaded else { return }
-            hasLoaded = true
-            isLoading = true
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            isLoading = false
+            await app.loadMyApplications()
         }
     }
 
@@ -125,6 +118,31 @@ struct ApplicationsView: View {
                 }
             }
             .padding(.vertical, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if let error = app.lastErrorMessage, !error.isEmpty {
+            EmptyStateView(
+                icon: "wifi.exclamationmark",
+                title: "Не вдалося завантажити",
+                message: error,
+                actionTitle: "Спробувати ще",
+                action: {
+                    Task { await app.loadMyApplications() }
+                }
+            )
+            .vkCard()
+        } else {
+            EmptyStateView(
+                icon: "paperplane",
+                title: "Відгуків поки немає",
+                message: "Знайдіть вакансію до душі у стрічці та надішліть перший відгук.",
+                actionTitle: "До стрічки",
+                action: { router.selection = 0 }
+            )
+            .vkCard()
         }
     }
 

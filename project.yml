@@ -41,6 +41,7 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
+        VAKANSIO_INTERNAL_TOKEN: ""
 
 schemes:
   Vakansio:

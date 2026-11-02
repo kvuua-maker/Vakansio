@@ -10,9 +10,10 @@ struct ResumeEditorSheet: View {
     @State private var about = ""
     @State private var skills = ""
     @State private var didLoad = false
+    @State private var isSaving = false
 
     private var canSave: Bool {
-        !headline.vkTrimmed.isEmpty
+        !headline.vkTrimmed.isEmpty && !isSaving
     }
 
     var body: some View {
@@ -64,14 +65,13 @@ struct ResumeEditorSheet: View {
                 VStack(spacing: 0) {
                     Divider().overlay(VK.hairline)
 
-                    PrimaryButton(title: "Зберегти резюме", icon: "checkmark", isEnabled: canSave) {
-                        app.updateResume(
-                            headline: headline.vkTrimmed,
-                            about: about.vkTrimmed,
-                            skills: skills.vkTrimmed,
-                            city: city.vkTrimmed.isEmpty ? app.resume.city : city.vkTrimmed
-                        )
-                        dismiss()
+                    PrimaryButton(
+                        title: "Зберегти резюме",
+                        icon: "checkmark",
+                        isLoading: isSaving,
+                        isEnabled: canSave
+                    ) {
+                        save()
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 10)
@@ -88,6 +88,24 @@ struct ResumeEditorSheet: View {
             city = app.resume.city
             about = app.resume.about
             skills = app.resume.skills
+        }
+    }
+
+    private func save() {
+        guard canSave else { return }
+        isSaving = true
+
+        Task {
+            let saved = await app.updateResume(
+                headline: headline.vkTrimmed,
+                about: about.vkTrimmed,
+                skills: skills.vkTrimmed,
+                city: city.vkTrimmed.isEmpty ? app.resume.city : city.vkTrimmed
+            )
+            isSaving = false
+            if saved {
+                dismiss()
+            }
         }
     }
 

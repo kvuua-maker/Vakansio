@@ -323,6 +323,17 @@ struct VacancyDetailView: View {
 
                 if let application = appliedApplication {
                     appliedBadge(for: application)
+                } else if vacancy.status == .pending {
+                    HStack(spacing: 7) {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("На модерації")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(VK.warning)
+                    .padding(.horizontal, 16)
+                    .frame(height: 50)
+                    .background(VK.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     Button {
                         showApplySheet = true

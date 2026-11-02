@@ -5,13 +5,12 @@ struct EmployerDashboardView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var router: TabRouter
 
-    @State private var isLoading = true
-    @State private var hasLoaded = false
     @State private var showPaywall = false
 
-    private let totalViews = 1_248
-    private let totalResponses = 32
-    private let conversion = "2,6%"
+    private var companyName: String {
+        let name = app.userName.vkTrimmed
+        return name.isEmpty ? "Моя компанія" : name
+    }
 
     var body: some View {
         NavigationStack {
@@ -23,7 +22,7 @@ struct EmployerDashboardView: View {
                         header
                         subscriptionCard
 
-                        if isLoading {
+                        if app.isLoadingEmployer && app.employerJobs.isEmpty {
                             SkeletonStatRow()
                             ForEach(0..<2, id: \.self) { _ in
                                 SkeletonVacancyCard()
@@ -31,12 +30,16 @@ struct EmployerDashboardView: View {
                         } else {
                             stats
                             vacanciesSection
+                            candidatesSection
                             createButton
                         }
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .padding(.bottom, 28)
+                }
+                .refreshable {
+                    await app.loadEmployerData()
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -45,11 +48,7 @@ struct EmployerDashboardView: View {
             PaywallView(isModal: true)
         }
         .task {
-            guard !hasLoaded else { return }
-            hasLoaded = true
-            isLoading = true
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            isLoading = false
+            await app.loadEmployerData()
         }
     }
 
@@ -62,7 +61,7 @@ struct EmployerDashboardView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(VK.textSecondary)
 
-                Text("Привіт, \(app.company.name) 👋")
+                Text("Привіт, \(companyName) 👋")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(VK.textPrimary)
                     .lineLimit(1)
@@ -71,7 +70,11 @@ struct EmployerDashboardView: View {
 
             Spacer(minLength: 8)
 
-            CompanyAvatar(initials: app.company.initials, size: 44)
+            UserAvatar(
+                base64: app.resume.photoBase64,
+                size: 44,
+                initials: app.userName.vkTrimmed.isEmpty ? "VK" : app.userName.vkInitials
+            )
         }
         .padding(.top, 4)
     }
@@ -117,7 +120,7 @@ struct EmployerDashboardView: View {
             }
 
             LimitProgressView(
-                used: app.employerVacancies.count,
+                used: app.employerJobs.count,
                 limit: app.tier.vacancyLimit,
                 tint: Color.white,
                 track: Color.white.opacity(0.22),
@@ -125,7 +128,7 @@ struct EmployerDashboardView: View {
             )
 
             HStack(spacing: 8) {
-                Text("Використано \(app.employerVacancies.count) з \(app.tier.vacancyLimit) вакансій")
+                Text("Використано \(app.employerJobs.count) з \(app.tier.vacancyLimit) вакансій")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.85))
 
@@ -148,9 +151,24 @@ struct EmployerDashboardView: View {
 
     private var stats: some View {
         HStack(spacing: 10) {
-            StatTile(value: vkFormatMoney(totalViews), label: "Перегляди", icon: "eye.fill", tint: VK.brand)
-            StatTile(value: "\(totalResponses)", label: "Відгуки", icon: "paperplane.fill", tint: VK.warning)
-            StatTile(value: conversion, label: "Конверсія", icon: "chart.line.uptrend.xyaxis", tint: VK.success)
+            StatTile(
+                value: "\(app.activeEmployerJobs)",
+                label: "Активні",
+                icon: "checkmark.circle.fill",
+                tint: VK.success
+            )
+            StatTile(
+                value: "\(app.pendingEmployerJobs)",
+                label: "На модерації",
+                icon: "clock.fill",
+                tint: VK.warning
+            )
+            StatTile(
+                value: "\(app.totalEmployerApplications)",
+                label: "Відгуки",
+                icon: "paperplane.fill",
+                tint: VK.brand
+            )
         }
     }
 
@@ -165,23 +183,23 @@ struct EmployerDashboardView: View {
 
                 Spacer()
 
-                Text("\(app.employerVacancies.count) активних")
+                Text("\(app.employerJobs.count)")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(VK.textSecondary)
             }
             .padding(.top, 4)
 
-            if app.employerVacancies.isEmpty {
+            if app.employerJobs.isEmpty {
                 EmptyStateView(
                     icon: "briefcase",
                     title: "Ще немає вакансій",
-                    message: "Створіть першу вакансію — і кандидати зможуть вас знайти.",
+                    message: "Створіть першу вакансію — після модерації кандидати зможуть відгукнутися.",
                     actionTitle: "Створити",
                     action: { router.selection = 1 }
                 )
                 .vkCard()
             } else {
-                ForEach(app.employerVacancies) { vacancy in
+                ForEach(app.employerJobs) { vacancy in
                     employerVacancyRow(vacancy)
                 }
             }
@@ -192,21 +210,14 @@ struct EmployerDashboardView: View {
         HStack(spacing: 12) {
             CompanyAvatar(initials: vacancy.company.initials, size: 44)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(vacancy.title)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(VK.textPrimary)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(VK.success)
-                            .frame(width: 6, height: 6)
-                        Text("Активна")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(VK.success)
-                    }
+                    jobStatusPill(vacancy.status)
 
                     Text("·")
                         .font(.system(size: 10))
@@ -215,30 +226,130 @@ struct EmployerDashboardView: View {
                     Text(vacancy.city)
                         .font(.system(size: 11))
                         .foregroundStyle(VK.textSecondary)
-
-                    Text("·")
-                        .font(.system(size: 10))
-                        .foregroundStyle(VK.textTertiary)
-
-                    Text(vacancy.postedText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(VK.textSecondary)
+                        .lineLimit(1)
                 }
-                .lineLimit(1)
             }
 
             Spacer(minLength: 4)
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text("128")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(VK.textPrimary)
-                Text("переглядів")
+                Text("\(vacancy.applicationsCount)")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(vacancy.applicationsCount > 0 ? VK.brand : VK.textSecondary)
+
+                Text("відгуків")
                     .font(.system(size: 10))
                     .foregroundStyle(VK.textTertiary)
             }
         }
         .vkCard(padding: 14)
+    }
+
+    private func jobStatusPill(_ status: JobStatus) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: status.icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(status.title)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(status.tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(status.tint.opacity(0.12), in: Capsule())
+    }
+
+    // MARK: Candidates
+
+    private var candidatesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Кандидати")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(VK.textPrimary)
+
+                Spacer()
+
+                Text("\(app.employerApplications.count)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(VK.textSecondary)
+            }
+            .padding(.top, 4)
+
+            if app.employerApplications.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(VK.brand)
+                        .frame(width: 40, height: 40)
+                        .background(VK.brand.opacity(0.1), in: Circle())
+
+                    Text("Кандидати з'являться тут, щойно хтось відгукнеться на вашу вакансію.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(VK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
+                }
+                .vkCard(padding: 14)
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(app.employerApplications.prefix(3)) { application in
+                        HStack(spacing: 10) {
+                            UserAvatar(
+                                base64: application.candidatePhotoBase64,
+                                size: 38,
+                                initials: application.candidateInitials
+                            )
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(application.candidateName.isEmpty ? "Кандидат" : application.candidateName)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(VK.textPrimary)
+                                    .lineLimit(1)
+
+                                Text(application.vacancy.title)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(VK.textSecondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 4)
+
+                            AIScoreBadge(score: application.aiScore, compact: true)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .vkCard(padding: 14)
+            }
+
+            NavigationLink {
+                CandidatesView()
+            } label: {
+                HStack(spacing: 8) {
+                    Text(app.employerApplications.isEmpty ? "Кандидати" : "Усі кандидати")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(VK.brand)
+
+                    Spacer()
+
+                    Text("\(app.employerApplications.count)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(VK.textSecondary)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.textTertiary)
+                }
+                .padding(14)
+                .background(VK.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(VK.hairline, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     // MARK: CTA

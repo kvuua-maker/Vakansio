@@ -2,8 +2,9 @@ import SwiftUI
 import Foundation
 
 struct HelpSheet: View {
-    @EnvironmentObject private var app: AppState
     @Environment(\.dismiss) private var dismiss
+
+    private let supportURL = URL(string: "mailto:support@vakansio.app")!
 
     private let faq: [(question: String, answer: String)] = [
         (
@@ -48,9 +49,7 @@ struct HelpSheet: View {
                 }
 
                 Section {
-                    Button {
-                        app.showToast("Підтримка відповість протягом 24 годин", icon: "envelope.fill", style: .info)
-                    } label: {
+                    Link(destination: supportURL) {
                         Label("Написати в підтримку", systemImage: "envelope.fill")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(VK.brand)

@@ -369,6 +369,7 @@ struct FilterChip: View {
 struct SearchField: View {
     @Binding var text: String
     var placeholder: String = "Посада, компанія або місто"
+    var focus: FocusState<Bool>.Binding
     var onSubmit: (() -> Void)? = nil
 
     var body: some View {
@@ -382,6 +383,7 @@ struct SearchField: View {
                 .foregroundStyle(VK.textPrimary)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
+                .focused(focus)
                 .onSubmit { onSubmit?() }
 
             if !text.isEmpty {
@@ -590,5 +592,65 @@ struct IconCircleButton: View {
                 .overlay(Circle().strokeBorder(VK.hairline, lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - People
+
+struct UserAvatar: View {
+    let base64: String?
+    var size: CGFloat = 56
+    var initials: String = ""
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(VK.brand.opacity(0.12))
+
+            if let base64,
+               let data = Data(base64Encoded: base64),
+               let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if !initials.isEmpty {
+                Text(initials)
+                    .font(.system(size: size * 0.34, weight: .bold, design: .rounded))
+                    .foregroundStyle(VK.brand)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.38, weight: .semibold))
+                    .foregroundStyle(VK.brand.opacity(0.55))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(VK.hairline, lineWidth: 1))
+        .accessibilityHidden(true)
+    }
+}
+
+struct AIScoreBadge: View {
+    let score: Int
+    var compact: Bool = false
+
+    private var tint: Color {
+        if score >= 80 { return VK.success }
+        if score >= 60 { return VK.brand }
+        return VK.warning
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "sparkles")
+                .font(.system(size: compact ? 9 : 10, weight: .semibold))
+
+            Text("AI \(score)")
+                .font(.system(size: compact ? 10 : 11, weight: .bold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, compact ? 7 : 9)
+        .padding(.vertical, compact ? 4 : 5)
+        .background(tint.opacity(0.12), in: Capsule())
     }
 }

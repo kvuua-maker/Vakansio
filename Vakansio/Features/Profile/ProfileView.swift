@@ -1,30 +1,44 @@
 import SwiftUI
 import Foundation
+import PhotosUI
+import PDFKit
+import UniformTypeIdentifiers
 
 struct ProfileView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var router: TabRouter
 
     @State private var activeSheet: ProfileSheet?
-    @State private var loadingAction: ResumeAction?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotoPicker = false
+    @State private var showPDFImporter = false
+    @State private var isUploadingPhoto = false
+    @State private var isLoadingPDF = false
     @State private var showDeleteConfirm = false
 
     private enum ProfileSheet: String, Identifiable {
         case resumeEditor
+        case resumePreview
         case paywall
         case help
-        case createVacancy
 
         var id: String { rawValue }
     }
 
-    private enum ResumeAction: String, Identifiable {
-        case photo
-        case pdf
-        case manual
-        case diia
+    private var avatarInitials: String {
+        let name = app.userName.vkTrimmed
+        return name.isEmpty ? "VK" : name.vkInitials
+    }
 
-        var id: String { rawValue }
+    private var companyName: String {
+        let name = app.userName.vkTrimmed
+        return name.isEmpty ? "Моя компанія" : name
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "\(version) (\(build))"
     }
 
     var body: some View {
@@ -54,10 +68,18 @@ struct ProfileView: View {
             .alert("Видалити акаунт?", isPresented: $showDeleteConfirm) {
                 Button("Скасувати", role: .cancel) { }
                 Button("Видалити", role: .destructive) {
-                    app.deleteAccount()
+                    Task { await app.deleteAccount() }
                 }
             } message: {
-                Text("Усі відгуки, збережені вакансії та резюме буде втрачено. Дію неможливо скасувати.")
+                Text("Ваш профіль, відгуки, вакансії та фото буде видалено з сервера. Дію неможливо скасувати.")
+            }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+            .fileImporter(isPresented: $showPDFImporter, allowedContentTypes: [.pdf]) { result in
+                Task { await handlePDF(result) }
+            }
+            .onChange(of: photoItem) { _, item in
+                guard item != nil else { return }
+                Task { await handlePhoto(item) }
             }
         }
     }
@@ -69,12 +91,12 @@ struct ProfileView: View {
         switch sheet {
         case .resumeEditor:
             ResumeEditorSheet()
+        case .resumePreview:
+            ResumePreviewSheet()
         case .paywall:
             PaywallView(isModal: true)
         case .help:
             HelpSheet()
-        case .createVacancy:
-            CreateVacancyView(showsCloseButton: true)
         }
     }
 
@@ -99,24 +121,45 @@ struct ProfileView: View {
     private var profileHeader: some View {
         VStack(spacing: 16) {
             HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 62, height: 62)
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    ZStack(alignment: .bottomTrailing) {
+                        UserAvatar(
+                            base64: app.resume.photoBase64,
+                            size: 64,
+                            initials: avatarInitials
+                        )
 
-                    Text(app.userName.isEmpty ? "VK" : app.userName.vkInitials)
-                        .font(.system(size: 21, weight: .bold))
-                        .foregroundStyle(Color.white)
+                        ZStack {
+                            Circle()
+                                .fill(VK.brand)
+                                .frame(width: 22, height: 22)
+
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color.white)
+                        }
+                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 2))
+                        .offset(x: 2, y: 2)
+                    }
                 }
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
+                .buttonStyle(.plain)
+                .overlay {
+                    if isUploadingPhoto {
+                        Circle()
+                            .fill(Color.black.opacity(0.35))
+                            .frame(width: 64, height: 64)
+                            .overlay(ProgressView().tint(Color.white))
+                    }
+                }
+                .accessibilityLabel("Змінити фото профілю")
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(app.userName)
+                    Text(app.userName.isEmpty ? "Користувач Vakansio" : app.userName)
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(Color.white)
                         .lineLimit(1)
 
-                    Text(app.userEmail)
+                    Text(app.userEmail.isEmpty ? "Натисніть на фото, щоб додати" : app.userEmail)
                         .font(.system(size: 12))
                         .foregroundStyle(Color.white.opacity(0.8))
                         .lineLimit(1)
@@ -133,26 +176,20 @@ struct ProfileView: View {
             }
 
             HStack(spacing: 0) {
-                headerStat(
-                    value: "\(app.applications.count)",
-                    label: "Відгуки"
-                )
+                headerStat(value: "\(app.applications.count)", label: "Відгуки")
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(width: 1, height: 28)
+
+                headerStat(value: "\(app.savedVacancyIDs.count)", label: "Збережено")
 
                 Rectangle()
                     .fill(Color.white.opacity(0.18))
                     .frame(width: 1, height: 28)
 
                 headerStat(
-                    value: "\(app.savedVacancyIDs.count)",
-                    label: "Збережено"
-                )
-
-                Rectangle()
-                    .fill(Color.white.opacity(0.18))
-                    .frame(width: 1, height: 28)
-
-                headerStat(
-                    value: app.role == .employer ? "\(app.employerVacancies.count)" : "\(app.resume.completenessPercent)%",
+                    value: app.role == .employer ? "\(app.employerJobs.count)" : "\(app.resume.completenessPercent)%",
                     label: app.role == .employer ? "Вакансії" : "Резюме"
                 )
             }
@@ -224,22 +261,22 @@ struct ProfileView: View {
             ) {
                 IconActionTile(
                     title: "Фото",
-                    subtitle: app.resume.hasPhoto ? "Фото додано" : "Додати фото",
+                    subtitle: app.resume.hasPhoto ? "Фото додано" : "Обрати з галереї",
                     icon: "photo.on.rectangle.angled",
                     tint: VK.brand,
-                    isLoading: loadingAction == .photo
+                    isLoading: isUploadingPhoto
                 ) {
-                    runResumeAction(.photo)
+                    showPhotoPicker = true
                 }
 
                 IconActionTile(
                     title: "PDF",
-                    subtitle: app.resume.hasPDF ? "Файл завантажено" : "Імпорт PDF-резюме",
+                    subtitle: app.resume.hasPDF ? "Резюме імпортовано" : "Імпорт PDF-резюме",
                     icon: "doc.richtext.fill",
                     tint: VK.danger,
-                    isLoading: loadingAction == .pdf
+                    isLoading: isLoadingPDF
                 ) {
-                    runResumeAction(.pdf)
+                    showPDFImporter = true
                 }
 
                 IconActionTile(
@@ -252,13 +289,12 @@ struct ProfileView: View {
                 }
 
                 IconActionTile(
-                    title: "Дія",
-                    subtitle: app.resume.diiaImported ? "Дані імпортовано" : "Імпорт з Дії",
-                    icon: "checkmark.shield.fill",
-                    tint: Color(hex: 0x5856D6),
-                    isLoading: loadingAction == .diia
+                    title: "Переглянути",
+                    subtitle: "Як бачить роботодавець",
+                    icon: "eye.fill",
+                    tint: VK.success
                 ) {
-                    runResumeAction(.diia)
+                    activeSheet = .resumePreview
                 }
             }
         }
@@ -288,38 +324,23 @@ struct ProfileView: View {
             SectionHeader(title: "Компанія")
 
             HStack(spacing: 12) {
-                CompanyAvatar(initials: app.company.initials, size: 50)
+                CompanyAvatar(
+                    initials: companyName.prefix(2).uppercased(),
+                    size: 50
+                )
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(app.company.name)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(VK.textPrimary)
+                    Text(companyName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(VK.textPrimary)
+                        .lineLimit(1)
 
-                        if app.company.isVerified {
-                            VerifiedBadge(compact: true)
-                        }
-                    }
-
-                    Text(app.company.industry)
+                    Text("Роботодавець · \(app.employerJobs.count) вакансій")
                         .font(.system(size: 12))
                         .foregroundStyle(VK.textSecondary)
-                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 0)
-
-                Button {
-                    app.showToast("Редагування профілю компанії скоро буде доступне", icon: "pencil", style: .info)
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(VK.brand)
-                        .frame(width: 34, height: 34)
-                        .background(VK.brand.opacity(0.1), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Редагувати компанію")
             }
             .vkCard()
 
@@ -341,7 +362,7 @@ struct ProfileView: View {
                 }
 
                 LimitProgressView(
-                    used: app.employerVacancies.count,
+                    used: app.employerJobs.count,
                     limit: app.tier.vacancyLimit,
                     tint: app.tier.accent
                 )
@@ -371,6 +392,40 @@ struct ProfileView: View {
             SecondaryButton(title: "Створити вакансію", icon: "plus") {
                 router.selection = 1
             }
+
+            NavigationLink {
+                CandidatesView()
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(VK.brand.opacity(0.1))
+                            .frame(width: 34, height: 34)
+
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(VK.brand)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Кандидати")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(VK.textPrimary)
+
+                        Text("\(app.employerApplications.count) відгуків на ваші вакансії")
+                            .font(.system(size: 11))
+                            .foregroundStyle(VK.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.textTertiary)
+                }
+                .vkCard()
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -564,7 +619,7 @@ struct ProfileView: View {
                 }
 
                 AppleSignInButton(isLoading: app.isAuthLoading) {
-                    app.signInWithApple()
+                    Task { await app.signInWithApple() }
                 }
                 .padding(.top, 4)
             }
@@ -578,7 +633,7 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 14) {
                 benefitRow(icon: "bookmark.fill", title: "Збережені вакансії", subtitle: "Повертайтеся до цікавих пропозицій")
                 benefitRow(icon: "eye.fill", title: "Статуси відгуків", subtitle: "Дізнавайтеся, коли вас переглянули")
-                benefitRow(icon: "checkmark.shield.fill", title: "Резюме з Дії", subtitle: "Імпорт документів в один тап")
+                benefitRow(icon: "photo.on.rectangle.angled", title: "Фото та PDF", subtitle: "Додайте фото й імпортуйте резюме")
             }
             .vkCard()
 
@@ -621,7 +676,7 @@ struct ProfileView: View {
 
     private var footer: some View {
         VStack(spacing: 6) {
-            Text("Vakansio 1.0.0 (1)")
+            Text("Vakansio \(appVersion)")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(VK.textTertiary)
 
@@ -633,25 +688,57 @@ struct ProfileView: View {
         .padding(.top, 10)
     }
 
-    // MARK: Actions
+    // MARK: Photo / PDF
 
-    private func runResumeAction(_ action: ResumeAction) {
-        guard loadingAction == nil else { return }
-        loadingAction = action
+    private func handlePhoto(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-            loadingAction = nil
+        isUploadingPhoto = true
+        defer {
+            isUploadingPhoto = false
+            photoItem = nil
+        }
 
-            switch action {
-            case .photo:
-                app.markResumePhotoAdded()
-            case .pdf:
-                app.markResumePDFAdded()
-            case .manual:
-                activeSheet = .resumeEditor
-            case .diia:
-                app.markResumeImportedFromDiia()
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let base64 = ImageUtils.jpegBase64(from: data) else {
+                app.showToast("Не вдалося обробити фото", icon: "exclamationmark.triangle.fill", style: .error)
+                return
             }
+
+            let saved = await app.setPhoto(base64)
+            if saved {
+                app.showToast("Фото профілю оновлено", icon: "photo.fill", style: .success)
+            }
+        } catch {
+            app.showToast("Не вдалося завантажити фото", icon: "exclamationmark.triangle.fill", style: .error)
+        }
+    }
+
+    private func handlePDF(_ result: Result<URL, Error>) async {
+        switch result {
+        case .success(let url):
+            isLoadingPDF = true
+            let access = url.startAccessingSecurityScopedResource()
+            defer {
+                if access { url.stopAccessingSecurityScopedResource() }
+                isLoadingPDF = false
+            }
+
+            guard let document = PDFDocument(url: url),
+                  let text = document.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else {
+                app.showToast("У PDF немає текстового шару", icon: "exclamationmark.triangle.fill", style: .error)
+                return
+            }
+
+            let saved = await app.setPDFResume(text: text)
+            if saved {
+                app.showToast("PDF-резюме імпортовано", icon: "doc.fill", style: .success)
+            }
+
+        case .failure(let error):
+            app.showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
         }
     }
 }

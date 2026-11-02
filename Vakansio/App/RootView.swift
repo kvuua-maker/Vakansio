@@ -25,6 +25,9 @@ struct RootView: View {
             }
         }
         .background(VK.screen.ignoresSafeArea())
+        .task {
+            await app.bootstrap()
+        }
         .preferredColorScheme(app.themePreference.colorScheme)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: app.toast?.id)
         .animation(.easeInOut(duration: 0.25), value: app.hasCompletedOnboarding)
