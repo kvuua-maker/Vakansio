@@ -269,6 +269,14 @@ struct PaywallView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
+            HStack(spacing: 4) {
+                Link("Умови використання", destination: APIConfig.termsURL)
+                Text("·")
+                Link("Політика конфіденційності", destination: APIConfig.privacyURL)
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(VK.brand)
+
             if let message = store.errorMessage ?? purchaseError {
                 Text(message)
                     .font(.system(size: 10))

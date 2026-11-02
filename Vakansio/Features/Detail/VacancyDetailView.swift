@@ -4,9 +4,12 @@ import UIKit
 
 struct VacancyDetailView: View {
     @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
     let vacancy: Vacancy
 
     @State private var isApplying = false
+    @State private var showReportDialog = false
+    @State private var showBlockDialog = false
     @State private var showAppliedAlert = false
     @State private var isStartingChat = false
     @State private var activeConversation: Conversation?
@@ -66,6 +69,26 @@ struct VacancyDetailView: View {
                             .foregroundStyle(VK.textPrimary)
                     }
                     .accessibilityLabel("Поділитися")
+
+                    if !isOwnVacancy {
+                        Menu {
+                            Button {
+                                showReportDialog = true
+                            } label: {
+                                Label("Поскаржитися", systemImage: "flag")
+                            }
+
+                            Button(role: .destructive) {
+                                showBlockDialog = true
+                            } label: {
+                                Label("Заблокувати роботодавця", systemImage: "hand.raised")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .foregroundStyle(VK.textPrimary)
+                        }
+                        .accessibilityLabel("Більше")
+                    }
                 }
             }
         }
@@ -92,6 +115,29 @@ struct VacancyDetailView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog(
+            "Поскаржитися на вакансію",
+            isPresented: $showReportDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Шахрайство") { submitReport(reason: "Шахрайство") }
+            Button("Нецензурна лексика") { submitReport(reason: "Нецензурна лексика") }
+            Button("Дискримінація") { submitReport(reason: "Дискримінація") }
+            Button("Спам") { submitReport(reason: "Спам") }
+            Button("Скасувати", role: .cancel) { }
+        }
+        .confirmationDialog(
+            "Заблокувати роботодавця?",
+            isPresented: $showBlockDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Заблокувати", role: .destructive) {
+                blockEmployer()
+            }
+            Button("Скасувати", role: .cancel) { }
+        } message: {
+            Text("Вакансії цього роботодавця та чат з ним зникнуть із вашого акаунта.")
         }
     }
 
@@ -435,6 +481,24 @@ struct VacancyDetailView: View {
         }
         .buttonStyle(.plain)
         .disabled(isStartingChat)
+    }
+
+    private func submitReport(reason: String) {
+        Task { @MainActor in
+            _ = await app.report(targetType: "job", targetId: vacancy.id, reason: reason)
+        }
+    }
+
+    private func blockEmployer() {
+        guard !vacancy.employerId.isEmpty else {
+            app.showToast("Не вдалося визначити роботодавця", icon: "exclamationmark.triangle.fill", style: .error)
+            return
+        }
+        Task { @MainActor in
+            if await app.blockUser(vacancy.employerId) {
+                dismiss()
+            }
+        }
     }
 
     private func startChat() {

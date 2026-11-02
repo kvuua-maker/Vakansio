@@ -114,6 +114,7 @@ final class StoreKitService: ObservableObject {
 
     func refreshEntitlements() async {
         var activeProduct: VakansioStoreProduct?
+        var activeJWS: String?
 
         for await result in Transaction.currentEntitlements {
             guard let transaction = try? checkVerified(result) else { continue }
@@ -122,9 +123,13 @@ final class StoreKitService: ObservableObject {
 
             if activeProduct == nil || product.rank > activeProduct!.rank {
                 activeProduct = product
+                activeJWS = result.jwsRepresentation
             }
         }
 
+        if let activeJWS {
+            latestJWS = activeJWS
+        }
         purchasedTier = activeProduct?.tier ?? .start
     }
 

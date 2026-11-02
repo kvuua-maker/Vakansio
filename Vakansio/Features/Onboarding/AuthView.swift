@@ -49,6 +49,14 @@ struct AuthView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(VK.textTertiary)
                         .multilineTextAlignment(.center)
+
+                    HStack(spacing: 4) {
+                        Link("Умови", destination: APIConfig.termsURL)
+                        Text("·")
+                        Link("Конфіденційність", destination: APIConfig.privacyURL)
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(VK.brand)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 32)

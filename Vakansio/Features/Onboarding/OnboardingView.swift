@@ -189,11 +189,21 @@ struct OnboardingView: View {
     }
 
     private var legal: some View {
-        Text("Продовжуючи, ви приймаєте Умови використання та Політику конфіденційності Vakansio")
-            .font(.system(size: 11))
-            .foregroundStyle(VK.textTertiary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 8)
+        VStack(spacing: 4) {
+            Text("Продовжуючи, ви приймаєте Умови використання та Політику конфіденційності Vakansio")
+                .font(.system(size: 11))
+                .foregroundStyle(VK.textTertiary)
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 4) {
+                Link("Умови", destination: APIConfig.termsURL)
+                Text("·")
+                Link("Конфіденційність", destination: APIConfig.privacyURL)
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(VK.brand)
+        }
+        .padding(.horizontal, 8)
     }
 
     private func continueWithSelectedRole() {

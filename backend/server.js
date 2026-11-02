@@ -151,6 +151,26 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_conversations_candidate ON conversations(candidate_id);
   CREATE INDEX IF NOT EXISTS idx_conversations_employer ON conversations(employer_id);
 
+  CREATE TABLE IF NOT EXISTS blocks (
+    user_id TEXT NOT NULL,
+    blocked_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, blocked_user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    reporter_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+  CREATE INDEX IF NOT EXISTS idx_blocks_user ON blocks(user_id);
+
   CREATE TABLE IF NOT EXISTS devices (
     user_id TEXT NOT NULL,
     token TEXT NOT NULL,
@@ -321,6 +341,17 @@ function send(res, statusCode, payload) {
   res.end(body);
 }
 
+function sendHtml(res, statusCode, html) {
+  const body = String(html || '');
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'public, max-age=300',
+    ...CORS_HEADERS,
+  });
+  res.end(body);
+}
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -463,6 +494,39 @@ function getConversationRow(id) {
 function canAccessConversation(userId, conversation) {
   return Boolean(conversation) &&
     (userId === conversation.candidate_id || userId === conversation.employer_id);
+}
+
+function isBlockedBetween(userA, userB) {
+  if (!userA || !userB || userA === userB) return false;
+  return Boolean(
+    db.prepare(
+      `SELECT 1 FROM blocks
+       WHERE (user_id = ? AND blocked_user_id = ?)
+          OR (user_id = ? AND blocked_user_id = ?)
+       LIMIT 1`
+    ).get(userA, userB, userB, userA)
+  );
+}
+
+function normalizeSubscription(user) {
+  if (!user) return user;
+  const tier = String(user.subscription_tier || 'starter');
+  const known = ['starter', 'pro', 'business'];
+  let nextTier = known.includes(tier) ? tier : 'starter';
+  const expiresAt = String(user.subscription_expires_at || '');
+  if (nextTier !== 'starter') {
+    const expires = Date.parse(expiresAt);
+    if (!Number.isFinite(expires) || expires <= Date.now()) {
+      nextTier = 'starter';
+    }
+  }
+  if (nextTier !== user.subscription_tier || (nextTier === 'starter' && expiresAt)) {
+    db.prepare(
+      "UPDATE users SET subscription_tier = ?, subscription_expires_at = '' WHERE id = ?"
+    ).run(nextTier, user.id);
+    return { ...user, subscription_tier: nextTier, subscription_expires_at: '' };
+  }
+  return user;
 }
 
 function profileJson(row) {
@@ -727,7 +791,7 @@ async function recommendedJobsFor(userId) {
     `SELECT j.*,
        (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applications_count
      FROM jobs j WHERE j.status = 'active' ORDER BY j.created_at DESC`
-  ).all();
+  ).all().filter((job) => !isBlockedBetween(userId, job.employer_id));
 
   if (!jobs.length) return [];
 
@@ -1283,6 +1347,27 @@ async function moderateJob(jobId) {
   }
 
   db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(nextStatus, jobId);
+
+  const messages = {
+    active: {
+      title: 'Вакансію схвалено',
+      body: `«${job.title}» вже доступна кандидатам.`,
+    },
+    rejected: {
+      title: 'Вакансію відхилено',
+      body: `«${job.title}» не пройшла модерацію.`,
+    },
+    pending_manual_review: {
+      title: 'Вакансія на ручній перевірці',
+      body: `«${job.title}» очікує рішення адміністратора.`,
+    },
+  };
+  const notification = messages[nextStatus] || messages.pending_manual_review;
+  sendPush(job.employer_id, notification.title, notification.body, {
+    type: 'job_status',
+    jobId,
+    status: nextStatus,
+  }).catch((error) => console.error('Moderation push failed:', error.message));
 }
 
 // ---------- smart search ----------
@@ -1313,7 +1398,7 @@ async function parseSearchQuery(query) {
   }
 }
 
-async function searchJobsFor(url) {
+async function searchJobsFor(url, viewerId) {
   const query = str(url.searchParams.get('q'));
   const explicitCity = str(url.searchParams.get('city'));
   const explicitCategory = str(url.searchParams.get('category'));
@@ -1335,7 +1420,7 @@ async function searchJobsFor(url) {
     `SELECT j.*,
       (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applications_count
      FROM jobs j WHERE j.status = 'active' ORDER BY j.created_at DESC`
-  ).all();
+  ).all().filter((row) => !isBlockedBetween(viewerId, row.employer_id));
 
   const filtered = rows.filter((job) => {
     const haystack = normalizeText([
@@ -1419,6 +1504,42 @@ async function handle(req, res) {
     return;
   }
 
+  if (pathname === '/legal/privacy' || pathname === '/legal/terms') {
+    const isPrivacy = pathname === '/legal/privacy';
+    const title = isPrivacy ? 'Політика конфіденційності Vakansio' : 'Умови використання Vakansio';
+    const sections = isPrivacy
+      ? `
+        <h2>Які дані ми обробляємо</h2>
+        <p>Профіль: імʼя, email Apple ID, фото, посада, місто, резюме, навички та компанія. Вакансії, відгуки, повідомлення чату, скарги та блокування.</p>
+        <h2>Навіщо</h2>
+        <p>Щоб створити акаунт, показати вакансії та кандидатів, працювати з відгуками й чатом, модерувати контент, обробляти підписки та звернення підтримки.</p>
+        <h2>Кому передаються дані</h2>
+        <p>Apple — вхід і підписки; DeepSeek — генерація резюме, AI-матчинг і модерація тексту; Overit — перевірка ЄДРПОУ; Stripe — оплата пакетів Overit, якщо вона увімкнена. Ми не продаємо email і не показуємо контакти в публічних вакансіях.</p>
+        <h2>Зберігання та видалення</h2>
+        <p>Ви можете видалити акаунт у Профілі. Разом із ним видаляються профіль, вакансії, відгуки, повідомлення чату, пристрої та оцінки матчингу. Дані, потрібні для бухгалтерії або закону, можуть зберігатися окремо.</p>
+        <h2>Безпека</h2>
+        <p>Сесія зберігається в Keychain, API працює через HTTPS і JWT. Email використовується лише для акаунта та сервісних листів; спілкування відбувається у внутрішньому чаті.</p>
+        <h2>Контакти</h2>
+        <p>Питання щодо даних: <a href="mailto:support@vakansio.app">support@vakansio.app</a>.</p>`
+      : `
+        <h2>1. Сервіс</h2>
+        <p>Vakansio — платформа для пошуку роботи та найму. Роботодавці публікують вакансії, кандидати надсилають відгуки й спілкуються у внутрішньому чаті.</p>
+        <h2>2. Акаунт</h2>
+        <p>Вхід виконується через Apple ID. Ви відповідаєте за достовірність даних профілю, вакансій і резюме. Заборонені шахрайство, спам, дискримінація, нецензурна лексика та небезпечні умови праці.</p>
+        <h2>3. Модерація та скарги</h2>
+        <p>Вакансії проходять AI-модерацію; спірні випадки перевіряє адміністратор. У застосунку можна поскаржитися на вакансію, чат або користувача та заблокувати його.</p>
+        <h2>4. Підписки</h2>
+        <p>Pro і Business — автопоновлювані підписки через App Store. Оплата, скасування та відновлення керуються Apple ID. Starter безкоштовний.</p>
+        <h2>5. Платні перевірки Overit</h2>
+        <p>Після безкоштовного ліміту пакет перевірок може оплачуватися через налаштований платіжний провайдер. Якщо оплата недоступна, заявка переходить на ручну перевірку.</p>
+        <h2>6. Відповідальність</h2>
+        <p>Ми не гарантуємо працевлаштування або достовірність кожної вакансії. Рішення про найм ухвалюють роботодавець і кандидат.</p>
+        <h2>7. Контакти</h2>
+        <p><a href="mailto:support@vakansio.app">support@vakansio.app</a></p>`;
+    sendHtml(res, 200, `<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:760px;margin:32px auto;padding:0 20px;line-height:1.55;color:#1d1d1f}h1{font-size:28px}h2{font-size:18px;margin-top:24px}a{color:#0a66ff}</style></head><body><h1>${title}</h1><p>Оновлено: 2 листопада 2026 р.</p>${sections}<p><a href="/legal/privacy">Політика конфіденційності</a> · <a href="/legal/terms">Умови використання</a></p></body></html>`);
+    return;
+  }
+
   if (!pathname.startsWith('/v1/')) {
     send(res, 404, { error: 'Not found' });
     return;
@@ -1462,6 +1583,7 @@ async function handle(req, res) {
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     }
 
+    user = normalizeSubscription(user);
     send(res, 200, {
       token: signJwt(user),
       user: profileJson(user),
@@ -1485,11 +1607,12 @@ async function handle(req, res) {
     return;
   }
 
-  const authUser = db.prepare('SELECT * FROM users WHERE id = ?').get(tokenPayload.sub);
+  let authUser = db.prepare('SELECT * FROM users WHERE id = ?').get(tokenPayload.sub);
   if (!authUser) {
     send(res, 401, { error: 'Користувача не знайдено' });
     return;
   }
+  authUser = normalizeSubscription(authUser);
   req.user = authUser;
 
   if (pathname === '/v1/auth/session' && method === 'GET') {
@@ -1638,7 +1761,17 @@ async function handle(req, res) {
       db.prepare(`UPDATE jobs SET status = 'rejected' WHERE id = ?`).run(jobId);
     }
 
-    send(res, 200, jobJson(getJobRow(jobId)));
+    const moderatedJob = getJobRow(jobId);
+    sendPush(
+      moderatedJob.employer_id,
+      action === 'approve' ? 'Вакансію схвалено' : 'Вакансію відхилено',
+      action === 'approve'
+        ? `«${moderatedJob.title}» вже доступна кандидатам.`
+        : `«${moderatedJob.title}» не пройшла модерацію.`,
+      { type: 'job_status', jobId, status: moderatedJob.status }
+    ).catch((error) => console.error('Moderation push failed:', error.message));
+
+    send(res, 200, jobJson(moderatedJob));
     return;
   }
 
@@ -1678,7 +1811,7 @@ async function handle(req, res) {
 
   // Smart search
   if (pathname === '/v1/jobs/search' && method === 'GET') {
-    const result = await searchJobsFor(url);
+    const result = await searchJobsFor(url, req.user.id);
     send(res, 200, result);
     return;
   }
@@ -1697,6 +1830,7 @@ async function handle(req, res) {
       )
       .all();
 
+    rows = rows.filter((row) => !isBlockedBetween(req.user.id, row.employer_id));
     if (q) {
       rows = rows.filter((row) =>
         normalizeText(`${row.title} ${row.company_name} ${row.description}`).includes(q)
@@ -1831,6 +1965,7 @@ async function handle(req, res) {
   if (jobMatch && method === 'GET') {
     const row = getJobRow(decodeURIComponent(jobMatch[1]));
     if (!row) throw httpError(404, 'Вакансію не знайдено');
+    if (isBlockedBetween(req.user.id, row.employer_id)) throw httpError(404, 'Вакансію не знайдено');
     send(res, 200, jobJson(row));
     return;
   }
@@ -1930,6 +2065,13 @@ async function handle(req, res) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`
     ).run(applicationId, jobId, userId, name, email, photo, resumeText, coverLetter, ai.score, ai.summary, ai.source, createdAt);
 
+    sendPush(
+      job.employer_id,
+      'Новий відгук',
+      `${name || 'Кандидат'} відгукнувся на «${job.title}»`,
+      { type: 'application', applicationId, jobId }
+    ).catch((error) => console.error('Application push failed:', error.message));
+
     send(res, 201, applicationJson(getApplicationRow(applicationId), getJobRow(jobId)));
     return;
   }
@@ -1970,6 +2112,111 @@ async function handle(req, res) {
     return;
   }
 
+  // UGC: reports and blocking
+  if (pathname === '/v1/reports' && method === 'POST') {
+    const body = await readJson(req);
+    const targetType = str(body.targetType);
+    const targetId = str(body.targetId);
+    const reason = str(body.reason).slice(0, 500) || 'Не вказано';
+    const userId = req.user.id;
+    if (!['job', 'conversation', 'message', 'user'].includes(targetType) || !targetId) {
+      throw httpError(400, 'Некоректна ціль скарги');
+    }
+
+    if (targetType === 'job') {
+      const job = getJobRow(targetId);
+      if (!job) throw httpError(404, 'Вакансію не знайдено');
+    } else if (targetType === 'conversation') {
+      const conversation = getConversationRow(targetId);
+      if (!conversation || !canAccessConversation(userId, conversation)) {
+        throw httpError(403, 'Немає доступу до цього чату');
+      }
+    } else if (targetType === 'message') {
+      const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(targetId);
+      if (!message) throw httpError(404, 'Повідомлення не знайдено');
+      const conversation = getConversationRow(message.conversation_id);
+      if (!conversation || !canAccessConversation(userId, conversation)) {
+        throw httpError(403, 'Немає доступу до цього повідомлення');
+      }
+    } else {
+      const target = db.prepare('SELECT id FROM users WHERE id = ?').get(targetId);
+      if (!target) throw httpError(404, 'Користувача не знайдено');
+      if (targetId === userId) throw httpError(400, 'Не можна поскаржитися на себе');
+    }
+
+    db.prepare(
+      `INSERT INTO reports (id, reporter_id, target_type, target_id, reason, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'open', ?)`
+    ).run(newId('report'), userId, targetType, targetId, reason, nowIso());
+    send(res, 201, { ok: true });
+    return;
+  }
+
+  if (pathname === '/v1/blocks' && method === 'GET') {
+    const rows = db.prepare(
+      'SELECT blocked_user_id, created_at FROM blocks WHERE user_id = ? ORDER BY created_at DESC'
+    ).all(req.user.id);
+    send(res, 200, rows.map((row) => ({
+      userId: row.blocked_user_id,
+      createdAt: row.created_at,
+    })));
+    return;
+  }
+
+  const blockUserMatch = pathname.match(/^\/v1\/users\/([^/]+)\/block$/);
+  if (blockUserMatch && (method === 'POST' || method === 'DELETE')) {
+    const targetId = decodeURIComponent(blockUserMatch[1]);
+    if (targetId === req.user.id) throw httpError(400, 'Не можна заблокувати себе');
+    const target = db.prepare('SELECT id FROM users WHERE id = ?').get(targetId);
+    if (!target) throw httpError(404, 'Користувача не знайдено');
+
+    if (method === 'POST') {
+      db.prepare(
+        `INSERT INTO blocks (user_id, blocked_user_id, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id, blocked_user_id) DO NOTHING`
+      ).run(req.user.id, targetId, nowIso());
+    } else {
+      db.prepare('DELETE FROM blocks WHERE user_id = ? AND blocked_user_id = ?').run(req.user.id, targetId);
+    }
+    send(res, 200, { ok: true, blocked: method === 'POST' });
+    return;
+  }
+
+  if (pathname === '/v1/admin/reports' && method === 'GET') {
+    if (!req.user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
+    const rows = db.prepare(
+      `SELECT r.*, u.name AS reporter_name
+       FROM reports r LEFT JOIN users u ON u.id = r.reporter_id
+       ORDER BY r.created_at DESC LIMIT 200`
+    ).all();
+    send(res, 200, rows.map((row) => ({
+      id: row.id,
+      reporterId: row.reporter_id,
+      reporterName: row.reporter_name || '',
+      targetType: row.target_type,
+      targetId: row.target_id,
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+    })));
+    return;
+  }
+
+  const adminReportMatch = pathname.match(/^\/v1\/admin\/reports\/([^/]+)$/);
+  if (adminReportMatch && method === 'POST') {
+    if (!req.user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
+    const body = await readJson(req);
+    const action = str(body.action);
+    if (!['resolve', 'dismiss'].includes(action)) throw httpError(400, 'Невідома дія');
+    const reportId = decodeURIComponent(adminReportMatch[1]);
+    const info = db.prepare('UPDATE reports SET status = ? WHERE id = ?')
+      .run(action === 'resolve' ? 'resolved' : 'dismissed', reportId);
+    if (!info.changes) throw httpError(404, 'Скаргу не знайдено');
+    send(res, 200, { ok: true });
+    return;
+  }
+
   // Conversations (job-scoped chat, independent of an application)
   if (pathname === '/v1/conversations' && method === 'GET') {
     const userId = req.user.id;
@@ -1979,7 +2226,10 @@ async function handle(req, res) {
        ORDER BY COALESCE(NULLIF(last_message_at, ''), created_at) DESC`
     ).all(userId, userId);
 
-    send(res, 200, rows.map((row) => conversationJson(row, userId)).filter(Boolean));
+    send(res, 200, rows
+      .filter((row) => !isBlockedBetween(userId, row.candidate_id) && !isBlockedBetween(userId, row.employer_id))
+      .map((row) => conversationJson(row, userId))
+      .filter(Boolean));
     return;
   }
 
@@ -2009,6 +2259,8 @@ async function handle(req, res) {
     }
 
     if (candidateId === job.employer_id) throw httpError(400, 'Не можна відкрити чат із собою');
+    const otherPartyId = job.employer_id === req.user.id ? candidateId : job.employer_id;
+    if (isBlockedBetween(req.user.id, otherPartyId)) throw httpError(403, 'Користувача заблоковано');
     const conversation = getOrCreateConversation(job, candidateId);
     if (!conversation) throw httpError(400, 'Не вдалося створити чат');
     send(res, 200, conversationJson(conversation, userId));
@@ -2022,6 +2274,8 @@ async function handle(req, res) {
     const conversation = getConversationRow(conversationId);
     if (!conversation) throw httpError(404, 'Чат не знайдено');
     if (!canAccessConversation(userId, conversation)) throw httpError(403, 'Немає доступу до цього чату');
+    const otherId = userId === conversation.candidate_id ? conversation.employer_id : conversation.candidate_id;
+    if (isBlockedBetween(userId, otherId)) throw httpError(403, 'Користувача заблоковано');
 
     const rows = db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
@@ -2040,6 +2294,8 @@ async function handle(req, res) {
     const conversation = getConversationRow(conversationId);
     if (!conversation) throw httpError(404, 'Чат не знайдено');
     if (!canAccessConversation(userId, conversation)) throw httpError(403, 'Немає доступу до цього чату');
+    const otherId = userId === conversation.candidate_id ? conversation.employer_id : conversation.candidate_id;
+    if (isBlockedBetween(userId, otherId)) throw httpError(403, 'Користувача заблоковано');
 
     const job = getJobRow(conversation.job_id);
     const candidate = db.prepare('SELECT * FROM users WHERE id = ?').get(conversation.candidate_id);
@@ -2079,6 +2335,8 @@ async function handle(req, res) {
     if (!canAccessApplication(userId, context.application, context.job)) {
       throw httpError(403, 'Немає доступу до цього чату');
     }
+    const otherId = userId === context.application.user_id ? context.job.employer_id : context.application.user_id;
+    if (isBlockedBetween(userId, otherId)) throw httpError(403, 'Користувача заблоковано');
 
     const rows = db
       .prepare('SELECT * FROM messages WHERE application_id = ? ORDER BY created_at ASC')
@@ -2101,6 +2359,8 @@ async function handle(req, res) {
     if (!canAccessApplication(userId, context.application, context.job)) {
       throw httpError(403, 'Немає доступу до цього чату');
     }
+    const otherId = userId === context.application.user_id ? context.job.employer_id : context.application.user_id;
+    if (isBlockedBetween(userId, otherId)) throw httpError(403, 'Користувача заблоковано');
 
     const role = userId === context.application.user_id ? 'seeker' : 'employer';
     const senderName = role === 'seeker'
@@ -2222,13 +2482,26 @@ async function handle(req, res) {
     db.exec('BEGIN');
     try {
       db.prepare(
-        `DELETE FROM applications
-         WHERE user_id = ? OR job_id IN (SELECT id FROM jobs WHERE employer_id = ?)`
-      ).run(userId, userId);
+        `DELETE FROM messages
+         WHERE sender_id = ?
+            OR conversation_id IN (SELECT id FROM conversations WHERE candidate_id = ? OR employer_id = ?)
+            OR application_id IN (
+              SELECT id FROM applications
+              WHERE user_id = ? OR job_id IN (SELECT id FROM jobs WHERE employer_id = ?)
+            )`
+      ).run(userId, userId, userId, userId, userId);
+      db.prepare('DELETE FROM conversations WHERE candidate_id = ? OR employer_id = ?')
+        .run(userId, userId);
+      db.prepare('DELETE FROM applications WHERE user_id = ? OR job_id IN (SELECT id FROM jobs WHERE employer_id = ?)')
+        .run(userId, userId);
+      db.prepare('DELETE FROM match_scores WHERE user_id = ? OR job_id IN (SELECT id FROM jobs WHERE employer_id = ?)')
+        .run(userId, userId);
       db.prepare('DELETE FROM jobs WHERE employer_id = ?').run(userId);
       db.prepare('DELETE FROM devices WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM match_scores WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM verification_requests WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM blocks WHERE user_id = ? OR blocked_user_id = ?').run(userId, userId);
+      db.prepare('DELETE FROM reports WHERE reporter_id = ? OR (target_type = \'user\' AND target_id = ?)')
+        .run(userId, userId);
       db.prepare('DELETE FROM users WHERE id = ?').run(userId);
       db.exec('COMMIT');
     } catch (error) {

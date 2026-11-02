@@ -3,6 +3,7 @@ import Foundation
 
 struct ChatView: View {
     @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
 
     let conversationId: String
     let title: String
@@ -14,6 +15,8 @@ struct ChatView: View {
     @State private var isLoading = true
     @State private var isSending = false
     @State private var lastError: String?
+    @State private var showReportDialog = false
+    @State private var showBlockDialog = false
     @FocusState private var inputFocused: Bool
 
     private let pollInterval: UInt64 = 5_000_000_000
@@ -71,6 +74,50 @@ struct ChatView: View {
         .navigationTitle(counterpartyName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        showReportDialog = true
+                    } label: {
+                        Label("Поскаржитися", systemImage: "flag")
+                    }
+
+                    Button(role: .destructive) {
+                        showBlockDialog = true
+                    } label: {
+                        Label("Заблокувати", systemImage: "hand.raised")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(VK.textPrimary)
+                }
+                .accessibilityLabel("Більше")
+            }
+        }
+        .confirmationDialog(
+            "Поскаржитися на чат",
+            isPresented: $showReportDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Шахрайство") { submitReport(reason: "Шахрайство") }
+            Button("Нецензурна лексика") { submitReport(reason: "Нецензурна лексика") }
+            Button("Дискримінація") { submitReport(reason: "Дискримінація") }
+            Button("Спам") { submitReport(reason: "Спам") }
+            Button("Скасувати", role: .cancel) { }
+        }
+        .confirmationDialog(
+            "Заблокувати співрозмовника?",
+            isPresented: $showBlockDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Заблокувати", role: .destructive) {
+                blockCounterparty()
+            }
+            Button("Скасувати", role: .cancel) { }
+        } message: {
+            Text("Ви більше не зможете писати одне одному, а чат зникне зі списку.")
+        }
         .task {
             await pollMessages()
         }
@@ -233,6 +280,24 @@ struct ChatView: View {
 
     private var canSend: Bool {
         !text.vkTrimmed.isEmpty && !isSending
+    }
+
+    private func submitReport(reason: String) {
+        Task { @MainActor in
+            _ = await app.report(targetType: "conversation", targetId: conversationId, reason: reason)
+        }
+    }
+
+    private func blockCounterparty() {
+        guard !counterpartId.isEmpty else {
+            app.showToast("Не вдалося визначити співрозмовника", icon: "exclamationmark.triangle.fill", style: .error)
+            return
+        }
+        Task { @MainActor in
+            if await app.blockUser(counterpartId) {
+                dismiss()
+            }
+        }
     }
 
     private func pollMessages() async {

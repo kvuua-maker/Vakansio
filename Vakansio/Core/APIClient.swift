@@ -5,6 +5,14 @@ import Foundation
 enum APIConfig {
     static let fallbackBaseURL = "https://178.105.32.46:8443"
 
+    static var termsURL: URL {
+        URL(string: baseURLString + "/legal/terms")!
+    }
+
+    static var privacyURL: URL {
+        URL(string: baseURLString + "/legal/privacy")!
+    }
+
     static var baseURLString: String {
         if let value = Bundle.main.object(forInfoDictionaryKey: "VakansioAPIBaseURL") as? String {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -197,6 +205,27 @@ struct APIClient {
             body: ConversationMessageRequest(text: text)
         )
         return dto.toModel()
+    }
+
+    func report(targetType: String, targetId: String, reason: String) async throws {
+        let _: OKResponse = try await post(
+            path: "/v1/reports",
+            body: ReportRequest(targetType: targetType, targetId: targetId, reason: reason)
+        )
+    }
+
+    func blockUser(userId: String) async throws {
+        let _: OKResponse = try await post(
+            path: "/v1/users/\(userId)/block",
+            body: EmptyRequest()
+        )
+    }
+
+    func unblockUser(userId: String) async throws {
+        let _: OKResponse = try await delete(
+            path: "/v1/users/\(userId)/block",
+            query: []
+        )
     }
 
     func registerDevice(userId: String, token: String) async throws {
@@ -409,6 +438,12 @@ struct APIClient {
 // MARK: - Requests
 
 private struct EmptyRequest: Encodable {}
+
+private struct ReportRequest: Encodable {
+    let targetType: String
+    let targetId: String
+    let reason: String
+}
 
 struct CreateJobRequest: Encodable {
     let employerId: String

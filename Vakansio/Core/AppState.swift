@@ -303,6 +303,42 @@ final class AppState: ObservableObject {
         }
     }
 
+    func report(targetType: String, targetId: String, reason: String) async -> Bool {
+        do {
+            try await api.report(targetType: targetType, targetId: targetId, reason: reason)
+            showToast("Скаргу надіслано на перевірку", icon: "flag.fill", style: .success)
+            return true
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func blockUser(_ userId: String) async -> Bool {
+        do {
+            try await api.blockUser(userId: userId)
+            jobs.removeAll { $0.employerId == userId }
+            conversations.removeAll { $0.counterpartId == userId }
+            showToast("Користувача заблоковано", icon: "hand.raised.fill", style: .success)
+            return true
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
+    func unblockUser(_ userId: String) async -> Bool {
+        do {
+            try await api.unblockUser(userId: userId)
+            await loadConversations()
+            showToast("Користувача розблоковано", icon: "hand.raised.slash.fill", style: .success)
+            return true
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return false
+        }
+    }
+
     func loadConversations() async {
         guard !isLoadingConversations else { return }
         isLoadingConversations = true
