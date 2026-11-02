@@ -19,10 +19,17 @@ struct PaywallView: View {
         if app.tier == selected {
             return "Ваш поточний тариф"
         }
-        if selected.price == 0 {
-            return "Перейти на Старт"
+        if selected == .start {
+            return "Старт активний за замовчуванням"
         }
-        return "Активувати тариф «\(selected.name)»"
+        if StoreKitService.isEnabled && store.products.isEmpty {
+            return "Тарифи тимчасово недоступні"
+        }
+        return "Оформити «\(selected.name)»"
+    }
+
+    private var selectedProduct: Product? {
+        store.products.first { VakansioStoreProduct(rawValue: $0.id)?.tier == selected }
     }
 
     var body: some View {
