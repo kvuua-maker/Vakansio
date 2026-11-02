@@ -341,6 +341,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    func activate(_ newTier: SubscriptionTier) {
+        tier = newTier
+        defaults.set(newTier.rawValue, forKey: Keys.tier)
+    }
+
     var canCreateVacancy: Bool {
         employerJobs.count < tier.vacancyLimit
     }
