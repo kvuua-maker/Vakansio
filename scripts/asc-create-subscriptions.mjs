@@ -107,6 +107,51 @@ async function findOrCreateGroup(appId) {
   return { group: data.data, created: true };
 }
 
+async function ensureGroupLocalization(group) {
+  let versions = await listAll(`/subscriptionGroups/${group.id}/versions?limit=200`);
+  let version = versions[0];
+  if (!version) {
+    const created = await request('POST', '/subscriptionGroupVersions', {
+      data: {
+        type: 'subscriptionGroupVersions',
+        relationships: {
+          subscriptionGroup: { data: { type: 'subscriptionGroups', id: group.id } },
+        },
+      },
+    });
+    version = created.data;
+  }
+  if (!version) return { skipped: true };
+
+  const localizations = await listAll(`/subscriptionGroupVersions/${version.id}/localizations?limit=200`);
+  if (localizations.some((row) => ['uk', 'uk-UA'].includes(row.attributes?.locale))) {
+    return { skipped: true, versionId: version.id };
+  }
+
+  let lastError = null;
+  for (const locale of ['uk', 'uk-UA']) {
+    try {
+      await request('POST', '/v2/subscriptionGroupLocalizations', {
+        data: {
+          type: 'subscriptionGroupLocalizations',
+          attributes: {
+            name: 'Плани Vakansio',
+            locale,
+          },
+          relationships: {
+            version: { data: { type: 'subscriptionGroupVersions', id: version.id } },
+          },
+        },
+      });
+      return { skipped: false, versionId: version.id, locale };
+    } catch (error) {
+      lastError = error;
+      if (!/UNSUPPORTED_LOCALE_CODE/i.test(error.message)) throw error;
+    }
+  }
+  throw lastError || new Error('No supported subscription group locale');
+}
+
 async function findOrCreateSubscription(groupId, spec) {
   const subs = await listAll(`/subscriptionGroups/${groupId}/subscriptions?limit=200`);
   let sub = subs.find((item) => item.attributes?.productId === spec.productId);
@@ -220,7 +265,12 @@ async function ensurePrice(sub, spec) {
     .sort((a, b) => a.diff - b.diff)[0]?.point;
   if (!nearest) throw new Error('No usable subscription price point');
   if (!exact) {
-    console.warn(`WARN: exact ${spec.price} UAH point not found; using ${nearest.attributes?.customerPrice} UAH`);
+    const nearby = points
+      .map((point) => Number(point.attributes?.customerPrice || 0))
+      .filter((value) => value > 0)
+      .sort((a, b) => Math.abs(a - spec.price) - Math.abs(b - spec.price))
+      .slice(0, 8);
+    console.warn(`WARN: exact ${spec.price} UAH point not found; using ${nearest.attributes?.customerPrice} UAH; nearby=${nearby.join(',')}`);
   }
   // The first price is the starting price: Apple rejects a future startDate
   // until a starting price exists. Future price changes may include startDate.
@@ -327,6 +377,13 @@ try {
   report.groupId = group.id;
   report.groupCreated = created;
   console.log(`Group: ${group.id} ${GROUP_NAME} (${created ? 'created' : 'existing'})`);
+  try {
+    report.groupLocalization = await ensureGroupLocalization(group);
+    console.log(`GROUP_LOCALIZATION ${JSON.stringify(report.groupLocalization)}`);
+  } catch (error) {
+    report.groupLocalizationError = error.message;
+    console.error(`GROUP_LOCALIZATION_FAILED ${error.message}`);
+  }
 
   for (const spec of SPECS) {
     const entry = { productId: spec.productId };
