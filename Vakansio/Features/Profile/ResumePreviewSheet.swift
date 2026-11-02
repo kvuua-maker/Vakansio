@@ -10,9 +10,15 @@ struct ResumePreviewSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 16) {
                     header
-                    section(title: "Про себе", text: app.resume.about)
-                    section(title: "Навички", text: app.resume.skills)
-                    section(title: "Місто", text: app.resume.city)
+
+                    if !app.resume.generatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        fullResume
+                    } else {
+                        section(title: "Про себе", text: app.resume.about)
+                        section(title: "Навички", text: app.resume.skills)
+                        section(title: "Місто", text: app.resume.city)
+                    }
+
                     hint
                 }
                 .padding(16)
@@ -60,6 +66,28 @@ struct ResumePreviewSheet: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(VK.hairline, lineWidth: 1)
         )
+    }
+
+    private var fullResume: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+
+                Text("Повне резюме")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(VK.textPrimary)
+            }
+
+            Text(app.resume.generatedText)
+                .font(.system(size: 13))
+                .foregroundStyle(VK.textSecondary)
+                .lineSpacing(3)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .vkCard()
     }
 
     private func section(title: String, text: String) -> some View {

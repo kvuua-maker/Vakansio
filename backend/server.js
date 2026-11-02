@@ -13,6 +13,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const http2 = require('node:http2');
 const { DatabaseSync } = require('node:sqlite');
+const { seedDatabase } = require('./seed-data');
 
 const PORT = Number(process.env.PORT || 8090);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -30,6 +31,15 @@ const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || 'com.kvuua.vakansio';
 const APNS_HOST = (process.env.APNS_ENV || 'production') === 'sandbox'
   ? 'https://api.sandbox.push.apple.com'
   : 'https://api.push.apple.com';
+
+const ADMIN_EMAIL = 'kvuua@yahoo.com';
+const OVERIT_API_URL = process.env.OVERIT_API_URL || 'https://overit.com.ua/api/search';
+const OVERIT_FREE_LIMIT = 25;
+const OVERIT_PAID_PACK = 100;
+const OVERIT_PACK_PRICE_UAH = 499;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_PAYMENT_METHOD_FALLBACK = process.env.STRIPE_OVERIT_PAYMENT_METHOD || '';
+const STRIPE_API_URL = 'https://api.stripe.com/v1/payment_intents';
 
 if (!INTERNAL_TOKEN) {
   console.error('INTERNAL_TOKEN is not set');
@@ -131,6 +141,29 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_messages_application ON messages(application_id);
   CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+
+  CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS api_usage (
+    month TEXT PRIMARY KEY,
+    free_used INTEGER NOT NULL DEFAULT 0,
+    paid_balance INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS verification_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    edrpou TEXT NOT NULL,
+    company_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending_manual_review',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_verification_status ON verification_requests(status);
 `);
 
 function ensureColumn(table, column, definition) {
@@ -143,6 +176,14 @@ function ensureColumn(table, column, definition) {
 ensureColumn('jobs', 'company_edrpou', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('jobs', 'company_verified', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('jobs', 'ai_verified', 'INTEGER NOT NULL DEFAULT 1');
+
+ensureColumn('users', 'resume_text', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'company_edrpou', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'company_verified', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'verification_status', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'stripe_customer_id', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'stripe_payment_method_id', "TEXT NOT NULL DEFAULT ''");
 
 // ---------- helpers ----------
 
@@ -312,6 +353,11 @@ function profileJson(row) {
     about: row.about,
     skills: row.skills,
     city: row.city,
+    resumeText: row.resume_text || '',
+    isAdmin: Boolean(row.is_admin),
+    companyEdrpou: row.company_edrpou || '',
+    companyVerified: Boolean(row.company_verified),
+    verificationStatus: row.verification_status || '',
     createdAt: row.created_at,
   };
 }
@@ -444,6 +490,8 @@ async function deepseekJson(system, user, maxTokens = 900) {
 
 function resumeForUser(user) {
   if (!user) return '';
+  const generated = str(user.resume_text);
+  if (generated) return generated;
   return [user.headline, user.about, user.skills, user.city]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
@@ -573,48 +621,291 @@ async function recommendedJobsFor(userId) {
     .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 }
 
+function fallbackResumeText({ fullName, position, city, experience, skills }) {
+  const lines = [];
+  if (fullName) lines.push(fullName);
+  const subtitle = [position, city].filter(Boolean).join(' · ');
+  if (subtitle) lines.push(subtitle);
+  lines.push('');
+  lines.push('ПРО СЕБЕ');
+  lines.push(
+    [
+      position ? `Фахівець на посаді ${position}.` : 'Мотивований фахівець.',
+      experience ? `Досвід: ${experience}.` : '',
+      skills ? `Ключові навички: ${skills}.` : '',
+      'Швидко навчаюся, відповідально ставлюся до задач і орієнтований на результат.',
+    ].filter(Boolean).join(' ')
+  );
+  lines.push('');
+  lines.push('ДОСВІД');
+  lines.push(experience || 'Досвід у відповідній сфері.');
+  lines.push('');
+  lines.push('КЛЮЧОВІ НАВИЧКИ');
+  lines.push(skills || 'Комунікація, командна робота, відповідальність.');
+  return lines.join('\n');
+}
+
 async function generateResume(answers) {
+  const fullName = str(answers?.fullName) || str(answers?.name);
   const position = str(answers?.position);
+  const city = str(answers?.city) || str(answers?.location);
   const experience = str(answers?.experience);
   const skills = str(answers?.skills);
-  const achievements = str(answers?.achievements);
-  const location = str(answers?.location);
 
   const system = [
-    'Ти — кар’єрний коуч і редактор резюме.',
-    'На основі 5 відповідей кандидата створи стисле професійне резюме українською.',
+    'Ти — HR-експерт і професійний редактор резюме.',
+    'На основі коротких даних кандидата напиши професійне резюме українською.',
+    'Додай блок «Про себе» (3–4 речення), красиво оформи досвід та витягни ключові навички.',
+    'Текст має бути розширеним і грамотним, готовим до надсилання роботодавцю.',
     'Поверни СУВОРО валідний JSON без markdown:',
-    '{"headline":"...","about":"...","skills":"...","city":"..."}',
-    'headline — посада (до 60 символів), about — 3-5 речень про досвід і досягнення (до 900 символів),',
-    'skills — через кому (до 200 символів), city — місто/формат роботи.',
+    '{"resumeText":"...","headline":"...","about":"...","skills":"...","city":"..."}',
+    'resumeText — повний текст резюме: ПІБ, бажана посада, місто, блоки «Про себе», «Досвід», «Ключові навички».',
     'Не вигадуй фактів, яких немає у відповідях.',
   ].join(' ');
 
-  const user = JSON.stringify({ position, experience, skills, achievements, location });
+  const user = JSON.stringify({ fullName, position, city, experience, skills });
+  const fallback = fallbackResumeText({ fullName, position, city, experience, skills });
 
   try {
-    const data = await deepseekJson(system, user, 900);
+    const data = await deepseekJson(system, user, 1400);
+    const headline = str(data.headline) || position || 'Фахівець';
+    const about = str(data.about) || fallback.split('ПРО СЕБЕ')[1]?.split('ДОСВІД')[0]?.trim() || '';
+    const skillsText = str(data.skills) || skills;
+    const cityText = str(data.city) || city || 'Київ';
+    const resumeText = str(data.resumeText) || fallback;
+
     return {
-      headline: (str(data.headline) || position || 'Фахівець').slice(0, 120),
-      about: (str(data.about) || [experience, achievements].filter(Boolean).join('. ')).slice(0, 1500),
-      skills: (str(data.skills) || skills).slice(0, 400),
-      city: (str(data.city) || location || 'Київ').slice(0, 80),
+      resumeText: resumeText.slice(0, 12000),
+      headline: headline.slice(0, 120),
+      about: about.slice(0, 1500),
+      skills: skillsText.slice(0, 400),
+      city: cityText.slice(0, 80),
       source: 'deepseek',
     };
   } catch (error) {
     console.error('DeepSeek resume generation failed, using fallback:', error.message);
     return {
+      resumeText: fallback.slice(0, 12000),
       headline: (position || 'Фахівець').slice(0, 120),
-      about: [
-        experience ? `Досвід: ${experience}.` : '',
-        achievements ? `Досягнення: ${achievements}.` : '',
-        'Швидко навчаюся та орієнтований на результат.',
-      ].filter(Boolean).join(' ').slice(0, 1500),
-      skills: (skills || 'Комунікація, командна робота').slice(0, 400),
-      city: (location || 'Київ').slice(0, 80),
+      about: (experience || 'Маю практичний досвід у відповідній сфері.').slice(0, 1500),
+      skills: (skills || 'Комунікація, командна робота, відповідальність.').slice(0, 400),
+      city: (city || 'Київ').slice(0, 80),
       source: 'fallback',
     };
   }
+}
+
+// ---------- Overit / admin ----------
+
+function currentMonth() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function ensureUsage(month = currentMonth()) {
+  let row = db.prepare('SELECT * FROM api_usage WHERE month = ?').get(month);
+  if (!row) {
+    db.prepare('INSERT INTO api_usage (month, free_used, paid_balance) VALUES (?, 0, 0)').run(month);
+    row = db.prepare('SELECT * FROM api_usage WHERE month = ?').get(month);
+  }
+  return row;
+}
+
+function usageJson(row) {
+  return {
+    month: row.month,
+    freeUsed: Number(row.free_used || 0),
+    freeLimit: OVERIT_FREE_LIMIT,
+    paidBalance: Number(row.paid_balance || 0),
+  };
+}
+
+function recordVerification(userId, edrpou, companyName, status, note = '') {
+  db.prepare(
+    `INSERT INTO verification_requests
+      (id, user_id, edrpou, company_name, status, note, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(newId('verify'), userId, edrpou, companyName || '', status, note || '', nowIso());
+}
+
+async function overitLookup(edrpou) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(
+      `${OVERIT_API_URL}?q=${encodeURIComponent(edrpou)}`,
+      { headers: { Accept: 'application/json' }, signal: controller.signal }
+    );
+    if (!response.ok) throw new Error(`Overit HTTP ${response.status}`);
+
+    const data = await response.json();
+    const results = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.results) ? data.results : []);
+    const count = Number(data?.count ?? results.length);
+
+    if (data?.ok === false || count <= 0 || results.length === 0) {
+      return { found: false, active: false, name: '', address: '' };
+    }
+
+    const item = results[0];
+    return {
+      found: true,
+      active: item.active !== false && !item.terminated,
+      name: str(item.name) || `ЄДРПОУ ${edrpou}`,
+      address: str(item.address),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function chargeOveritPack(user) {
+  if (!STRIPE_SECRET_KEY) {
+    return { ok: false, reason: 'stripe_not_configured' };
+  }
+
+  const paymentMethod = str(user.stripe_payment_method_id) || STRIPE_PAYMENT_METHOD_FALLBACK;
+  if (!paymentMethod) {
+    return { ok: false, reason: 'no_payment_method' };
+  }
+
+  const params = new URLSearchParams({
+    amount: String(OVERIT_PACK_PRICE_UAH * 100),
+    currency: 'uah',
+    payment_method: paymentMethod,
+    confirm: 'true',
+    off_session: 'true',
+    description: 'Vakansio Overit: 100 перевірок ЄДРПОУ',
+    'metadata[user_id]': user.id,
+    'metadata[pack]': 'overit_100',
+  });
+  if (str(user.stripe_customer_id)) {
+    params.set('customer', str(user.stripe_customer_id));
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const response = await fetch(STRIPE_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+      signal: controller.signal,
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      const message = data?.error?.message || `Stripe HTTP ${response.status}`;
+      console.error('Stripe Overit charge failed:', message);
+      return { ok: false, reason: message };
+    }
+    if (data.status === 'succeeded') {
+      return { ok: true, id: data.id };
+    }
+    return { ok: false, reason: `stripe_status_${data.status}` };
+  } catch (error) {
+    console.error('Stripe Overit charge error:', error.message);
+    return { ok: false, reason: error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyCompanyForUser(userId, edrpou) {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) throw httpError(404, 'Профіль не знайдено');
+
+  if (user.company_verified && user.company_edrpou === edrpou) {
+    return {
+      status: 'verified',
+      verified: true,
+      edrpou,
+      companyName: '',
+      usage: usageJson(ensureUsage()),
+    };
+  }
+
+  const usage = ensureUsage();
+  let source = null;
+  if (usage.free_used < OVERIT_FREE_LIMIT) {
+    source = 'free';
+  } else if (usage.paid_balance > 0) {
+    source = 'paid';
+  } else {
+    const charge = await chargeOveritPack(user);
+    if (!charge.ok) {
+      recordVerification(userId, edrpou, '', 'pending_manual_review', charge.reason || '');
+      db.prepare('UPDATE users SET verification_status = ? WHERE id = ?')
+        .run('pending_manual_review', userId);
+      return {
+        status: 'pending_manual_review',
+        verified: false,
+        edrpou,
+        reason: charge.reason || 'stripe_unavailable',
+        usage: usageJson(ensureUsage()),
+      };
+    }
+
+    db.prepare('UPDATE api_usage SET paid_balance = paid_balance + ? WHERE month = ?')
+      .run(OVERIT_PAID_PACK, usage.month);
+    source = 'paid';
+  }
+
+  const lookup = await overitLookup(edrpou);
+  const current = ensureUsage();
+
+  if (source === 'free') {
+    db.prepare('UPDATE api_usage SET free_used = free_used + 1 WHERE month = ?').run(current.month);
+  } else {
+    db.prepare('UPDATE api_usage SET paid_balance = MAX(paid_balance - 1, 0) WHERE month = ?').run(current.month);
+  }
+
+  const after = usageJson(ensureUsage());
+
+  if (!lookup.found) {
+    db.prepare(
+      'UPDATE users SET company_edrpou = ?, company_verified = 0, verification_status = ? WHERE id = ?'
+    ).run(edrpou, 'not_found', userId);
+    recordVerification(userId, edrpou, '', 'not_found', '');
+    return { status: 'not_found', verified: false, edrpou, usage: after };
+  }
+
+  if (!lookup.active) {
+    db.prepare(
+      'UPDATE users SET company_edrpou = ?, company_verified = 0, verification_status = ? WHERE id = ?'
+    ).run(edrpou, 'inactive', userId);
+    recordVerification(userId, edrpou, lookup.name, 'inactive', '');
+    return {
+      status: 'inactive',
+      verified: false,
+      edrpou,
+      companyName: lookup.name,
+      address: lookup.address,
+      usage: after,
+    };
+  }
+
+  db.prepare(
+    'UPDATE users SET company_edrpou = ?, company_verified = 1, verification_status = ? WHERE id = ?'
+  ).run(edrpou, 'verified', userId);
+  db.prepare(
+    'UPDATE jobs SET company_edrpou = ?, company_verified = 1, verified = 1 WHERE employer_id = ?'
+  ).run(edrpou, userId);
+  recordVerification(userId, edrpou, lookup.name, 'verified', '');
+
+  return {
+    status: 'verified',
+    verified: true,
+    edrpou,
+    companyName: lookup.name,
+    address: lookup.address,
+    usage: after,
+  };
 }
 
 // ---------- messages, devices, APNs ----------
@@ -778,173 +1069,7 @@ function approvePendingJobs() {
 
 // ---------- seed ----------
 
-const COMPANY_EDRPOU = {
-  'Nova Tech': '41123456',
-  'Kolo Studio': '43219876',
-  'Sich Labs': '44556677',
-  'Harniy Market': '40112233',
-  'Orbita Analytics': '42334455',
-};
-
-function backfillCompanyVerification() {
-  const update = db.prepare(
-    `UPDATE jobs
-     SET company_verified = 1, company_edrpou = ?, ai_verified = 1
-     WHERE company_name = ? AND verified = 1`
-  );
-  for (const [name, edrpou] of Object.entries(COMPANY_EDRPOU)) {
-    update.run(edrpou, name);
-  }
-}
-
-function seedIfEmpty() {
-  const count = Number(db.prepare('SELECT COUNT(*) AS count FROM jobs').get().count || 0);
-  if (count > 0) return;
-
-  db.prepare(
-    `INSERT INTO users (id, name, email, photo, headline, about, skills, city, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO NOTHING`
-  ).run(
-    'seed-employer',
-    'Vakansio Demo',
-    'jobs@vakansio.app',
-    null,
-    'Демо-роботодавець',
-    '',
-    '',
-    'Київ',
-    nowIso()
-  );
-
-  const jobs = [
-    {
-      title: 'Senior iOS Developer',
-      company: 'Nova Tech',
-      description:
-        'Nova Tech створює фінансові продукти, якими щомісяця користуються понад 2 мільйони людей. Шукаємо Senior iOS Developer, який допоможе розвивати флагманський застосунок, дбатиме про продуктивність і чистоту архітектури.',
-      salaryMin: 45000,
-      salaryMax: 70000,
-      city: 'Київ',
-      category: 'IT',
-      experience: '3–5 років',
-      requirements: ['4+ роки комерційної розробки на iOS', 'Swift, SwiftUI, Combine', 'REST API та Core Data', 'Розуміння SOLID і патернів проєктування'],
-      benefits: ['Медичне страхування', 'Бюджет на навчання', 'Гнучкий графік', 'Сучасне обладнання'],
-      email: 'jobs@novatech.ua',
-      hours: 2,
-    },
-    {
-      title: 'Product Designer',
-      company: 'Kolo Studio',
-      description:
-        'Kolo Studio — дизайн-студія з Львова, яка працює з продуктовими командами з Європи та США. Шукаємо Product Designer, який мислить сценаріями користувача та любить працювати з Figma.',
-      salaryMin: 30000,
-      salaryMax: 45000,
-      city: 'Львів',
-      category: 'Дизайн',
-      experience: '2–4 роки',
-      requirements: ['Портфоліо з 2–3 продуктовими кейсами', 'Впевнена робота у Figma', 'Досвід створення дизайн-систем', 'Англійська B2+'],
-      benefits: ['4-денний тиждень улітку', 'Оплата курсів', 'Компенсація коворкінгу', 'Ретрити'],
-      email: 'hello@kolostudio.design',
-      hours: 6,
-    },
-    {
-      title: 'QA Engineer (Manual)',
-      company: 'Sich Labs',
-      description:
-        'Sich Labs — аутсорсингова компанія з фокусом на fintech та healthcare. Команда працює над мобільним застосунком для страхової компанії з Німеччини. Потрібен уважний QA Engineer.',
-      salaryMin: 22000,
-      salaryMax: 32000,
-      city: 'Київ',
-      category: 'IT',
-      experience: '1–3 роки',
-      requirements: ['1+ рік тестування мобільних застосунків', 'HTTP, REST, JSON', 'TestRail або аналоги', 'Англійська для документації'],
-      benefits: ['Офіс біля метро', 'Медичне страхування', 'Навчальний бюджет', 'Офіційне працевлаштування'],
-      email: 'career@sichlabs.io',
-      hours: 20,
-    },
-    {
-      title: 'Marketing Manager',
-      company: 'Harniy Market',
-      description:
-        'Harniy Market — маркетплейс із понад 5 000 продавців. Шукаємо Marketing Manager, який відповідатиме за просування категорій і сезонних кампаній разом із командою перформансу.',
-      salaryMin: 28000,
-      salaryMax: 40000,
-      city: 'Одеса',
-      category: 'Маркетинг',
-      experience: '2–4 роки',
-      requirements: ['2+ роки в digital-маркетингу', 'Meta Ads та Google Ads', 'Розуміння воронки', 'Аналітичне мислення'],
-      benefits: ['Бонуси за KPI', 'Знижки на маркетплейсі', 'Гнучкий старт', 'Оплата психотерапії'],
-      email: 'hr@harniy.market',
-      hours: 26,
-    },
-    {
-      title: 'Data Analyst',
-      company: 'Orbita Analytics',
-      description:
-        'Orbita Analytics допомагає продуктовим командам приймати рішення на основі даних. Шукаємо Data Analyst, який любить не лише SQL, а й пояснювати складне простими словами.',
-      salaryMin: 35000,
-      salaryMax: 55000,
-      city: 'Київ',
-      category: 'Аналітика',
-      experience: '2–4 роки',
-      requirements: ['Впевнений SQL (PostgreSQL, ClickHouse)', 'Python для аналізу даних', 'BI-інструменти', 'Статистика та A/B тести'],
-      benefits: ['Віддалена робота', 'Компенсація навчання', 'Медичне страхування', '30 днів відпустки'],
-      email: 'join@orbita.analytics',
-      hours: 30,
-    },
-    {
-      title: 'Customer Support Specialist',
-      company: 'Nova Tech',
-      description:
-        'Команда підтримки Nova Tech — перша точка контакту для користувачів фінансового застосунку. Ти відповідатимеш у чаті, допомагатимеш із платежами та передаватимеш фідбек продуктовій команді.',
-      salaryMin: 18000,
-      salaryMax: 25000,
-      city: 'Віддалено',
-      category: 'Підтримка',
-      experience: 'Без досвіду',
-      requirements: ['Грамотна українська та англійська B1+', 'Емпатія та вміння слухати', 'Базові навички роботи з комп’ютером', 'Готовність до змінного графіку'],
-      benefits: ['Повне навчання', 'Змінний графік без ночей', 'Кар’єрне зростання', 'Бонус за англійську'],
-      email: 'support.hr@novatech.ua',
-      hours: 48,
-    },
-  ];
-
-  const insert = db.prepare(
-    `INSERT INTO jobs (
-      id, employer_id, title, company_name, description, summary,
-      salary_min, salary_max, city, category, is_remote,
-      employment_type, experience, requirements, benefits, contact_email,
-      status, verified, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  for (const job of jobs) {
-    insert.run(
-      newId('job'),
-      'seed-employer',
-      job.title,
-      job.company,
-      job.description,
-      job.description.slice(0, 160),
-      job.salaryMin,
-      job.salaryMax,
-      job.city,
-      job.category,
-      1,
-      'Повна зайнятість',
-      job.experience,
-      JSON.stringify(job.requirements),
-      JSON.stringify(job.benefits),
-      job.email,
-      'active',
-      1,
-      hoursAgo(job.hours)
-    );
-  }
-
-  console.log(`Seeded ${jobs.length} jobs`);
-}
+// Seed data lives in seed-data.js and is versioned via app_meta.
 
 // ---------- routes ----------
 
@@ -990,6 +1115,65 @@ async function handle(req, res) {
     if (!userId) throw httpError(400, 'Не вказано userId');
     const resume = await generateResume(body.answers || {});
     send(res, 200, resume);
+    return;
+  }
+
+  // Overit company verification
+  if (pathname === '/v1/company/verify' && method === 'POST') {
+    const body = await readJson(req);
+    const userId = str(body.userId);
+    const edrpou = str(body.edrpou).replace(/\D/g, '');
+
+    if (!userId) throw httpError(400, 'Не вказано userId');
+    if (!/^\d{8}$|^\d{10}$/.test(edrpou)) {
+      throw httpError(400, 'ЄДРПОУ має містити 8 або 10 цифр');
+    }
+
+    let result;
+    try {
+      result = await verifyCompanyForUser(userId, edrpou);
+    } catch (error) {
+      if (error.statusCode) throw error;
+      console.error('Overit verification failed:', error.message);
+      throw httpError(502, 'Не вдалося перевірити ЄДРПОУ. Спробуйте пізніше.');
+    }
+
+    send(res, 200, result);
+    return;
+  }
+
+  // Hidden owner admin panel
+  if (pathname === '/v1/admin/overview' && method === 'GET') {
+    const userId = str(url.searchParams.get('userId'));
+    if (!userId) throw httpError(400, 'Не вказано userId');
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    if (!user || !user.is_admin) throw httpError(403, 'Доступ лише для адміністратора');
+
+    const count = (table) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count || 0);
+    const counts = {
+      users: count('users'),
+      jobs: count('jobs'),
+      applications: count('applications'),
+      pendingVerifications: Number(
+        db.prepare(
+          "SELECT COUNT(*) AS count FROM verification_requests WHERE status = 'pending_manual_review'"
+        ).get().count || 0
+      ),
+    };
+
+    const pending = db.prepare(
+      `SELECT id, user_id, edrpou, company_name, status, note, created_at
+       FROM verification_requests
+       WHERE status = 'pending_manual_review'
+       ORDER BY created_at DESC LIMIT 10`
+    ).all();
+
+    send(res, 200, {
+      usage: usageJson(ensureUsage()),
+      counts,
+      pending,
+    });
     return;
   }
 
@@ -1056,7 +1240,7 @@ async function handle(req, res) {
       salaryMin,
       salaryMax,
       city,
-      str(body.category) || 'IT',
+      str(body.category) || 'IT та телеком',
       1,
       'Повна зайнятість',
       str(body.experience) || '1–3 роки',
@@ -1336,15 +1520,23 @@ async function handle(req, res) {
     const about = str(body.about);
     const skills = str(body.skills);
     const city = str(body.city);
+    const resumeText = str(body.resumeText);
     const createdAt = nowIso();
 
     if (photo && photo.length > 4 * 1024 * 1024) {
       throw httpError(413, 'Фото завелике (максимум 4 МБ base64)');
     }
+    if (resumeText.length > 12000) {
+      throw httpError(413, 'Резюме завелике (максимум 12 000 символів)');
+    }
+
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const effectiveEmail = email || (existing && existing.email) || '';
+    const isAdmin = effectiveEmail.trim().toLowerCase() === ADMIN_EMAIL ? 1 : 0;
 
     db.prepare(
-      `INSERT INTO users (id, name, email, photo, headline, about, skills, city, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (id, name, email, photo, headline, about, skills, city, resume_text, is_admin, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = COALESCE(NULLIF(excluded.name, ''), users.name),
          email = COALESCE(NULLIF(excluded.email, ''), users.email),
@@ -1352,8 +1544,22 @@ async function handle(req, res) {
          headline = excluded.headline,
          about = excluded.about,
          skills = excluded.skills,
-         city = excluded.city`
-    ).run(userId, name, email, photo, headline, about, skills, city, createdAt);
+         city = excluded.city,
+         resume_text = excluded.resume_text,
+         is_admin = excluded.is_admin`
+    ).run(
+      userId,
+      name,
+      email,
+      photo,
+      headline,
+      about,
+      skills,
+      city,
+      resumeText,
+      isAdmin,
+      createdAt
+    );
 
     db.prepare('DELETE FROM match_scores WHERE user_id = ?').run(userId);
     send(res, 200, profileJson(db.prepare('SELECT * FROM users WHERE id = ?').get(userId)));
@@ -1373,6 +1579,7 @@ async function handle(req, res) {
       db.prepare('DELETE FROM jobs WHERE employer_id = ?').run(userId);
       db.prepare('DELETE FROM devices WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM match_scores WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM verification_requests WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM users WHERE id = ?').run(userId);
       db.exec('COMMIT');
     } catch (error) {
@@ -1403,8 +1610,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-seedIfEmpty();
-backfillCompanyVerification();
+seedDatabase(db);
 approvePendingJobs();
 setInterval(approvePendingJobs, 30 * 1000).unref();
 

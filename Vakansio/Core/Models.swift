@@ -140,7 +140,7 @@ struct Vacancy: Identifiable, Hashable {
         currency: Currency = .uah,
         city: String,
         isRemote: Bool = false,
-        category: String = "IT",
+        category: String = "IT та телеком",
         employmentType: String = "Повна зайнятість",
         experience: String = "1–3 роки",
         summary: String = "",
@@ -307,15 +307,21 @@ struct UserProfile: Hashable {
     var about: String
     var skills: String
     var city: String
+    var resumeText: String = ""
+    var isAdmin: Bool = false
+    var companyEdrpou: String = ""
+    var companyVerified: Bool = false
+    var verificationStatus: String = ""
 }
 
 struct ResumeProfile: Hashable {
     var photoBase64: String?
     var hasPDF: Bool = false
-    var headline: String = "iOS Developer"
-    var about: String = "Продуктовий розробник з досвідом створення мобільних застосунків. Люблю чистий код і швидкі інтерфейси."
-    var skills: String = "Swift, SwiftUI, Combine, REST, Git"
+    var headline: String = "Фахівець"
+    var about: String = "Мотивований спеціаліст, який відповідально ставиться до роботи та швидко навчається."
+    var skills: String = "Комунікація, командна робота, відповідальність"
     var city: String = "Київ"
+    var generatedText: String = ""
 
     var hasPhoto: Bool {
         !(photoBase64 ?? "").isEmpty
@@ -336,7 +342,9 @@ struct ResumeProfile: Hashable {
     }
 
     var resumeText: String {
-        [headline, about, skills, city]
+        let full = generatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !full.isEmpty { return full }
+        return [headline, about, skills, city]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
@@ -351,7 +359,12 @@ struct ResumeProfile: Hashable {
             headline: headline,
             about: about,
             skills: skills,
-            city: city
+            city: city,
+            resumeText: generatedText,
+            isAdmin: false,
+            companyEdrpou: "",
+            companyVerified: false,
+            verificationStatus: ""
         )
     }
 }
@@ -532,14 +545,15 @@ struct ChatMessage: Identifiable, Hashable {
 // MARK: - AI resume
 
 struct AIResumeAnswers: Hashable {
+    var fullName: String = ""
     var position: String = ""
+    var city: String = ""
     var experience: String = ""
     var skills: String = ""
-    var achievements: String = ""
-    var location: String = ""
 }
 
 struct GeneratedResume: Hashable {
+    var resumeText: String = ""
     var headline: String
     var about: String
     var skills: String
@@ -549,4 +563,44 @@ struct GeneratedResume: Hashable {
     var usedDeepSeek: Bool {
         source == "deepseek"
     }
+}
+
+// MARK: - Company verification / admin
+
+struct CompanyVerificationResult: Hashable {
+    var status: String
+    var verified: Bool
+    var edrpou: String
+    var companyName: String
+    var reason: String?
+}
+
+struct AdminUsage: Hashable {
+    var month: String
+    var freeUsed: Int
+    var freeLimit: Int
+    var paidBalance: Int
+}
+
+struct AdminCounts: Hashable {
+    var users: Int
+    var jobs: Int
+    var applications: Int
+    var pendingVerifications: Int
+}
+
+struct AdminPendingVerification: Identifiable, Hashable {
+    var id: String
+    var userId: String
+    var edrpou: String
+    var companyName: String
+    var status: String
+    var note: String
+    var createdAt: Date
+}
+
+struct AdminOverview: Hashable {
+    var usage: AdminUsage
+    var counts: AdminCounts
+    var pending: [AdminPendingVerification]
 }

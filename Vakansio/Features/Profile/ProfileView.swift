@@ -15,6 +15,11 @@ struct ProfileView: View {
     @State private var isUploadingPhoto = false
     @State private var isLoadingPDF = false
     @State private var showDeleteConfirm = false
+    @State private var showEmailEditor = false
+    @State private var emailDraft = ""
+    @State private var edrpouDraft = ""
+    @State private var isVerifyingCompany = false
+    @State private var verificationMessage: String?
 
     private enum ProfileSheet: String, Identifiable {
         case resumeEditor
@@ -217,6 +222,143 @@ struct ProfileView: View {
 
     // MARK: Resume (seeker)
 
+    private var companyVerificationCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: app.companyVerified ? "checkmark.seal.fill" : "shield.lefthalf.filled")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(app.companyVerified ? VK.success : VK.brand)
+
+                Text(app.companyVerified ? "Компанію перевірено" : "Перевірка компанії")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(VK.textPrimary)
+
+                Spacer(minLength: 0)
+
+                if app.companyVerified {
+                    VerifiedEmployerBadge(compact: true)
+                }
+            }
+
+            if app.companyVerified {
+                Text("ЄДРПОУ \(app.companyEdrpou)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(VK.textSecondary)
+
+                Text("Статус підтверджено через реєстр Overit. Зелений бейдж з'явиться на ваших вакансіях.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(VK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Введіть ЄДРПОУ компанії, щоб отримати бейдж «Перевірений роботодавець».")
+                    .font(.system(size: 12))
+                    .foregroundStyle(VK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    TextField("ЄДРПОУ, 8 цифр", text: $edrpouDraft)
+                        .font(.system(size: 14))
+                        .keyboardType(.numberPad)
+                        .padding(.horizontal, 12)
+                        .frame(height: 42)
+                        .background(VK.screen, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(VK.hairline, lineWidth: 1)
+                        )
+
+                    Button {
+                        verifyCompany()
+                    } label: {
+                        Group {
+                            if isVerifyingCompany {
+                                ProgressView()
+                                    .tint(Color.white)
+                                    .scaleEffect(0.85)
+                            } else {
+                                Text("Перевірити")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                        }
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 42)
+                        .background(VK.brand, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isVerifyingCompany)
+                }
+
+                if let verificationMessage {
+                    Text(verificationMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if app.companyVerificationStatus == "pending_manual_review" {
+                    Text("Ліміт безкоштовних перевірок вичерпано. Заявку передано на ручну перевірку.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(VK.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .vkCard()
+    }
+
+    private func saveEmail() {
+        let cleaned = emailDraft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard cleaned.contains("@"), cleaned.contains(".") else {
+            app.showToast("Вкажіть коректний email", icon: "envelope.badge", style: .error)
+            return
+        }
+
+        app.userEmail = cleaned
+
+        Task { @MainActor in
+            let saved = await app.saveProfile()
+            if saved {
+                app.showToast(
+                    app.isAdmin ? "Адмін-доступ активовано" : "Email збережено",
+                    icon: app.isAdmin ? "lock.shield.fill" : "checkmark.circle.fill",
+                    style: .success
+                )
+            }
+        }
+    }
+
+    private func verifyCompany() {
+        let digits = edrpouDraft.filter { $0.isNumber }
+        guard digits.count == 8 || digits.count == 10 else {
+            app.showToast("ЄДРПОУ має містити 8 або 10 цифр", icon: "exclamationmark.triangle.fill", style: .error)
+            return
+        }
+
+        isVerifyingCompany = true
+        verificationMessage = nil
+
+        Task { @MainActor in
+            let result = await app.verifyCompany(edrpou: digits)
+            isVerifyingCompany = false
+
+            guard let result else { return }
+
+            switch result.status {
+            case "verified":
+                edrpouDraft = ""
+                verificationMessage = nil
+                app.showToast("Компанію підтверджено", icon: "checkmark.seal.fill", style: .success)
+            case "pending_manual_review":
+                verificationMessage = "Ліміт безкоштовних перевірок вичерпано. Заявку передано на ручну перевірку."
+            case "not_found":
+                verificationMessage = "Компанію з таким ЄДРПОУ не знайдено в реєстрі."
+            case "inactive":
+                verificationMessage = "Компанія має статус неактивної в реєстрі."
+            default:
+                verificationMessage = result.reason ?? "Не вдалося перевірити компанію."
+            }
+        }
+    }
+
     private var resumeSection: some View {
         VStack(spacing: 12) {
             SectionHeader(title: "Моє резюме")
@@ -320,7 +462,7 @@ struct ProfileView: View {
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(Color.white)
 
-                    Text("AI поставить 5 питань і напише текст")
+                    Text("3 прості кроки — і готовий текст")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.white.opacity(0.82))
                 }
@@ -384,6 +526,8 @@ struct ProfileView: View {
                 Spacer(minLength: 0)
             }
             .vkCard()
+
+            companyVerificationCard
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
@@ -550,6 +694,78 @@ struct ProfileView: View {
                 .tint(VK.brand)
             }
             .padding(14)
+
+            Divider().padding(.leading, 54)
+
+            Button {
+                emailDraft = app.userEmail
+                showEmailEditor = true
+            } label: {
+                HStack(spacing: 12) {
+                    settingIcon("envelope.fill", tint: VK.brand)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Email")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(VK.textPrimary)
+
+                        Text(app.userEmail.isEmpty ? "Не вказано" : app.userEmail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(VK.textSecondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Text("Змінити")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.brand)
+                }
+                .padding(14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .alert("Email", isPresented: $showEmailEditor) {
+                TextField("Email", text: $emailDraft)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.emailAddress)
+
+                Button("Скасувати", role: .cancel) { }
+                Button("Зберегти") { saveEmail() }
+            } message: {
+                Text("Email для входу. Для kvuua@yahoo.com відкриється прихована адмін-панель.")
+            }
+
+            if app.isAdmin {
+                Divider().padding(.leading, 54)
+
+                NavigationLink {
+                    AdminPanelView()
+                } label: {
+                    HStack(spacing: 12) {
+                        settingIcon("lock.shield.fill", tint: VK.danger)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Адмін-панель")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(VK.textPrimary)
+
+                            Text("Витрати Overit і статистика")
+                                .font(.system(size: 11))
+                                .foregroundStyle(VK.textSecondary)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(VK.textTertiary)
+                    }
+                    .padding(14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
 
             Divider().padding(.leading, 54)
 

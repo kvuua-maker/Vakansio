@@ -11,46 +11,9 @@ struct AIResumeWizardView: View {
     @State private var isGenerating = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var didPrefill = false
 
-    private struct Question {
-        let title: String
-        let subtitle: String
-        let placeholder: String
-        let icon: String
-    }
-
-    private let questions: [Question] = [
-        Question(
-            title: "Ким ви хочете працювати?",
-            subtitle: "Вкажіть бажану посаду — від неї залежить тон резюме.",
-            placeholder: "Наприклад: iOS Developer",
-            icon: "person.text.rectangle"
-        ),
-        Question(
-            title: "Який у вас досвід?",
-            subtitle: "Роки, сфери, типи продуктів або компаній.",
-            placeholder: "4 роки iOS, 2 роки у fintech, продуктові команди",
-            icon: "clock"
-        ),
-        Question(
-            title: "Які ключові навички?",
-            subtitle: "Технології, інструменти та софт-скіли.",
-            placeholder: "Swift, SwiftUI, Combine, REST, MVVM, Git",
-            icon: "hammer"
-        ),
-        Question(
-            title: "Які досягнення варто показати?",
-            subtitle: "Конкретні результати: цифри, запуски, оптимізації.",
-            placeholder: "Запустив застосунок на 200k користувачів, скоротив час завантаження на 40%",
-            icon: "trophy"
-        ),
-        Question(
-            title: "Місто та формат роботи?",
-            subtitle: "Де ви живете і який формат вам підходить.",
-            placeholder: "Київ, віддалено",
-            icon: "mappin.and.ellipse"
-        )
-    ]
+    private let totalSteps = 3
 
     var body: some View {
         NavigationStack {
@@ -79,9 +42,20 @@ struct AIResumeWizardView: View {
             }
         }
         .presentationDetents([.large])
+        .onAppear {
+            guard !didPrefill else { return }
+            didPrefill = true
+            answers.fullName = app.userName
+
+            let currentHeadline = app.resume.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !currentHeadline.isEmpty && currentHeadline != "Фахівець" {
+                answers.position = currentHeadline
+            }
+            answers.city = app.resume.city
+        }
     }
 
-    // MARK: Question step
+    // MARK: Steps
 
     private var questionView: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -89,32 +63,27 @@ struct AIResumeWizardView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Image(systemName: questions[step].icon)
+                    Image(systemName: stepIcon)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(VK.brand)
 
-                    Text("Крок \(step + 1) з 5")
+                    Text("Крок \(step + 1) з \(totalSteps)")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(VK.brand)
                 }
 
-                Text(questions[step].title)
+                Text(stepTitle)
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(VK.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(questions[step].subtitle)
+                Text(stepSubtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(VK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            LabeledTextEditor(
-                label: "Ваша відповідь",
-                placeholder: questions[step].placeholder,
-                text: answerBinding,
-                minHeight: 150
-            )
+            stepFields
 
             if let errorMessage {
                 Text(errorMessage)
@@ -133,8 +102,8 @@ struct AIResumeWizardView: View {
                 }
 
                 PrimaryButton(
-                    title: step == 4 ? "Згенерувати резюме" : "Далі",
-                    icon: step == 4 ? "sparkles" : "arrow.right",
+                    title: step == totalSteps - 1 ? "Згенерувати резюме" : "Далі",
+                    icon: step == totalSteps - 1 ? "sparkles" : "arrow.right",
                     isLoading: isGenerating,
                     isEnabled: canContinue
                 ) {
@@ -142,11 +111,54 @@ struct AIResumeWizardView: View {
                 }
             }
 
-            Text("AI сформує резюме з ваших відповідей. Ви зможете перевірити й відредагувати текст перед збереженням.")
+            Text("AI напише професійний текст: блок «Про себе», досвід і ключові навички. Ви зможете перевірити його перед збереженням.")
                 .font(.system(size: 11))
                 .foregroundStyle(VK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var stepFields: some View {
+        switch step {
+        case 0:
+            VStack(spacing: 12) {
+                LabeledField(
+                    label: "ПІБ",
+                    placeholder: "Олена Ковальчук",
+                    text: $answers.fullName,
+                    icon: "person.fill"
+                )
+
+                LabeledField(
+                    label: "Бажана посада",
+                    placeholder: "Водій категорії C",
+                    text: $answers.position,
+                    icon: "briefcase.fill"
+                )
+
+                LabeledField(
+                    label: "Місто",
+                    placeholder: "Київ",
+                    text: $answers.city,
+                    icon: "mappin.and.ellipse"
+                )
+            }
+        case 1:
+            LabeledTextEditor(
+                label: "Досвід",
+                placeholder: "Працював водієм 5 років, перевозив вантажі Україною. Маю права категорії C.",
+                text: $answers.experience,
+                minHeight: 170
+            )
+        default:
+            LabeledTextEditor(
+                label: "Навички",
+                placeholder: "Права категорії C, знання ПДР, відповідальність, уважність.",
+                text: $answers.skills,
+                minHeight: 170
+            )
         }
     }
 
@@ -159,20 +171,71 @@ struct AIResumeWizardView: View {
 
                 Spacer()
 
-                Text("\(step + 1)/5")
+                Text("\(step + 1)/\(totalSteps)")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(VK.brand)
             }
 
-            ProgressView(value: Double(step + 1), total: 5)
+            ProgressView(value: Double(step + 1), total: Double(totalSteps))
                 .tint(VK.brand)
+        }
+    }
+
+    private var stepTitle: String {
+        switch step {
+        case 0: return "Основне"
+        case 1: return "Досвід"
+        default: return "Навички"
+        }
+    }
+
+    private var stepSubtitle: String {
+        switch step {
+        case 0: return "Кілька слів про себе — і AI знатиме, з чого почати."
+        case 1: return "Опишіть досвід своїми словами. Не потрібні складні формулювання."
+        default: return "Перелічіть ключові навички, технології або інструменти."
+        }
+    }
+
+    private var stepIcon: String {
+        switch step {
+        case 0: return "person.text.rectangle"
+        case 1: return "clock"
+        default: return "hammer"
+        }
+    }
+
+    private var canContinue: Bool {
+        switch step {
+        case 0:
+            return !answers.fullName.vkTrimmed.isEmpty
+                && !answers.position.vkTrimmed.isEmpty
+                && !answers.city.vkTrimmed.isEmpty
+        case 1:
+            return !answers.experience.vkTrimmed.isEmpty
+        default:
+            return !answers.skills.vkTrimmed.isEmpty
+        }
+    }
+
+    private func advance() {
+        guard canContinue else { return }
+
+        if step < totalSteps - 1 {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                step += 1
+            }
+        } else {
+            generate()
         }
     }
 
     // MARK: Result
 
     private func resultView(_ resume: GeneratedResume) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let fullText = resumeText(for: resume)
+
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Резюме готове")
@@ -198,33 +261,21 @@ struct AIResumeWizardView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(resume.headline)
-                    .font(.system(size: 19, weight: .bold))
-                    .foregroundStyle(VK.textPrimary)
-
-                if !resume.skills.isEmpty {
-                    Text(resume.skills)
-                        .font(.system(size: 12, weight: .medium))
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(VK.brand)
-                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Готовий текст")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VK.textSecondary)
                 }
 
-                if !resume.city.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mappin.and.ellipse")
-                            .font(.system(size: 10))
-                        Text(resume.city)
-                            .font(.system(size: 11))
-                    }
-                    .foregroundStyle(VK.textSecondary)
-                }
-
-                Divider().overlay(VK.hairline)
-
-                Text(resume.about)
+                Text(fullText)
                     .font(.system(size: 13))
                     .foregroundStyle(VK.textSecondary)
-                    .lineSpacing(3)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .vkCard()
@@ -252,30 +303,25 @@ struct AIResumeWizardView: View {
         }
     }
 
-    private var answerBinding: Binding<String> {
-        switch step {
-        case 0: return $answers.position
-        case 1: return $answers.experience
-        case 2: return $answers.skills
-        case 3: return $answers.achievements
-        default: return $answers.location
-        }
-    }
+    private func resumeText(for resume: GeneratedResume) -> String {
+        let text = resume.resumeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty { return text }
 
-    private var canContinue: Bool {
-        !answerBinding.wrappedValue.vkTrimmed.isEmpty
-    }
-
-    private func advance() {
-        guard canContinue else { return }
-
-        if step < 4 {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                step += 1
-            }
-        } else {
-            generate()
-        }
+        return [
+            answers.fullName.vkTrimmed,
+            [answers.position.vkTrimmed, answers.city.vkTrimmed].filter { !$0.isEmpty }.joined(separator: " · "),
+            "",
+            "ПРО СЕБЕ",
+            resume.about,
+            "",
+            "ДОСВІД",
+            answers.experience.vkTrimmed,
+            "",
+            "КЛЮЧОВІ НАВИЧКИ",
+            resume.skills.isEmpty ? answers.skills.vkTrimmed : resume.skills
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
     }
 
     private func generate() {
@@ -303,15 +349,22 @@ struct AIResumeWizardView: View {
         errorMessage = nil
 
         Task { @MainActor in
+            if !answers.fullName.vkTrimmed.isEmpty {
+                app.userName = answers.fullName.vkTrimmed
+            }
+
+            let text = resumeText(for: resume)
             let saved = await app.updateResume(
-                headline: resume.headline,
+                headline: resume.headline.isEmpty ? answers.position.vkTrimmed : resume.headline,
                 about: resume.about,
-                skills: resume.skills,
-                city: resume.city
+                skills: resume.skills.isEmpty ? answers.skills.vkTrimmed : resume.skills,
+                city: resume.city.isEmpty ? answers.city.vkTrimmed : resume.city,
+                resumeText: text
             )
             isSaving = false
 
             if saved {
+                app.showToast("Резюме збережено", icon: "checkmark.seal.fill", style: .success)
                 dismiss()
             } else {
                 errorMessage = "Не вдалося зберегти резюме. Спробуйте ще раз."

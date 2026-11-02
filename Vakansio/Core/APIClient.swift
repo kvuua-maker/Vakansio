@@ -85,11 +85,11 @@ struct APIClient {
         let body = GenerateResumeRequest(
             userId: userId,
             answers: ResumeAnswersPayload(
+                fullName: answers.fullName,
                 position: answers.position,
+                city: answers.city,
                 experience: answers.experience,
-                skills: answers.skills,
-                achievements: answers.achievements,
-                location: answers.location
+                skills: answers.skills
             )
         )
         let dto: GeneratedResumeDTO = try await post(path: "/v1/resume/generate", body: body)
@@ -120,6 +120,22 @@ struct APIClient {
             path: "/v1/devices",
             body: DeviceRequest(userId: userId, token: token, platform: "ios")
         )
+    }
+
+    func verifyCompany(userId: String, edrpou: String) async throws -> CompanyVerificationResult {
+        let dto: CompanyVerificationDTO = try await post(
+            path: "/v1/company/verify",
+            body: VerifyCompanyRequest(userId: userId, edrpou: edrpou)
+        )
+        return dto.toModel()
+    }
+
+    func fetchAdminOverview(userId: String) async throws -> AdminOverview {
+        let dto: AdminOverviewDTO = try await get(
+            path: "/v1/admin/overview",
+            query: [URLQueryItem(name: "userId", value: userId)]
+        )
+        return dto.toModel()
     }
 
     func fetchEmployerJobs(employerId: String) async throws -> [Vacancy] {
@@ -324,6 +340,7 @@ struct UpdateProfileRequest: Encodable {
     let about: String
     let skills: String
     let city: String
+    let resumeText: String
 }
 
 private struct StatusUpdateRequest: Encodable {
@@ -382,7 +399,7 @@ struct JobDTO: Decodable {
         let company = Company(
             name: companyName ?? "Компанія",
             isVerified: companyVerified ?? verified ?? false,
-            industry: category ?? "IT",
+            industry: category ?? "IT та телеком",
             edrpou: edrpou.isEmpty ? nil : edrpou
         )
         let salaryMin = self.salaryMin ?? 0
@@ -398,7 +415,7 @@ struct JobDTO: Decodable {
             salaryMax: salaryMax,
             city: city ?? "Україна",
             isRemote: isRemote ?? false,
-            category: category ?? "IT",
+            category: category ?? "IT та телеком",
             employmentType: employmentType ?? "Повна зайнятість",
             experience: experience ?? "1–3 роки",
             summary: summary ?? String(description.prefix(160)),
@@ -460,6 +477,11 @@ struct ProfileDTO: Decodable {
     let about: String?
     let skills: String?
     let city: String?
+    let resumeText: String?
+    let isAdmin: Bool?
+    let companyEdrpou: String?
+    let companyVerified: Bool?
+    let verificationStatus: String?
 
     func toModel() -> UserProfile {
         UserProfile(
@@ -470,7 +492,12 @@ struct ProfileDTO: Decodable {
             headline: headline ?? "",
             about: about ?? "",
             skills: skills ?? "",
-            city: city ?? ""
+            city: city ?? "",
+            resumeText: resumeText ?? "",
+            isAdmin: isAdmin ?? false,
+            companyEdrpou: companyEdrpou ?? "",
+            companyVerified: companyVerified ?? false,
+            verificationStatus: verificationStatus ?? ""
         )
     }
 }
@@ -499,11 +526,11 @@ struct GenerateResumeRequest: Encodable {
 }
 
 struct ResumeAnswersPayload: Encodable {
+    let fullName: String
     let position: String
+    let city: String
     let experience: String
     let skills: String
-    let achievements: String
-    let location: String
 }
 
 private struct ChatMessageRequest: Encodable {
@@ -523,6 +550,7 @@ private struct OKResponse: Decodable {
 }
 
 struct GeneratedResumeDTO: Decodable {
+    let resumeText: String?
     let headline: String?
     let about: String?
     let skills: String?
@@ -531,6 +559,7 @@ struct GeneratedResumeDTO: Decodable {
 
     func toModel() -> GeneratedResume {
         GeneratedResume(
+            resumeText: resumeText ?? "",
             headline: headline ?? "",
             about: about ?? "",
             skills: skills ?? "",
@@ -558,6 +587,110 @@ struct ChatMessageDTO: Decodable {
             senderName: senderName ?? "",
             text: text ?? "",
             createdAt: APIDateParser.date(from: createdAt) ?? Date()
+        )
+    }
+}
+
+
+// MARK: - Overit verification / admin DTOs
+
+private struct VerifyCompanyRequest: Encodable {
+    let userId: String
+    let edrpou: String
+}
+
+struct CompanyVerificationDTO: Decodable {
+    let status: String?
+    let verified: Bool?
+    let edrpou: String?
+    let companyName: String?
+    let reason: String?
+
+    func toModel() -> CompanyVerificationResult {
+        CompanyVerificationResult(
+            status: status ?? "pending_manual_review",
+            verified: verified ?? false,
+            edrpou: edrpou ?? "",
+            companyName: companyName ?? "",
+            reason: reason
+        )
+    }
+}
+
+struct AdminUsageDTO: Decodable {
+    let month: String?
+    let freeUsed: Int?
+    let freeLimit: Int?
+    let paidBalance: Int?
+
+    func toModel() -> AdminUsage {
+        AdminUsage(
+            month: month ?? "",
+            freeUsed: freeUsed ?? 0,
+            freeLimit: freeLimit ?? 25,
+            paidBalance: paidBalance ?? 0
+        )
+    }
+}
+
+struct AdminCountsDTO: Decodable {
+    let users: Int?
+    let jobs: Int?
+    let applications: Int?
+    let pendingVerifications: Int?
+
+    func toModel() -> AdminCounts {
+        AdminCounts(
+            users: users ?? 0,
+            jobs: jobs ?? 0,
+            applications: applications ?? 0,
+            pendingVerifications: pendingVerifications ?? 0
+        )
+    }
+}
+
+struct AdminPendingDTO: Decodable {
+    let id: String
+    let userId: String?
+    let edrpou: String?
+    let companyName: String?
+    let status: String?
+    let note: String?
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userId = "user_id"
+        case edrpou
+        case companyName = "company_name"
+        case status
+        case note
+        case createdAt = "created_at"
+    }
+
+    func toModel() -> AdminPendingVerification {
+        AdminPendingVerification(
+            id: id,
+            userId: userId ?? "",
+            edrpou: edrpou ?? "",
+            companyName: companyName ?? "",
+            status: status ?? "",
+            note: note ?? "",
+            createdAt: APIDateParser.date(from: createdAt) ?? Date()
+        )
+    }
+}
+
+struct AdminOverviewDTO: Decodable {
+    let usage: AdminUsageDTO?
+    let counts: AdminCountsDTO?
+    let pending: [AdminPendingDTO]?
+
+    func toModel() -> AdminOverview {
+        AdminOverview(
+            usage: usage?.toModel() ?? AdminUsage(month: "", freeUsed: 0, freeLimit: 25, paidBalance: 0),
+            counts: counts?.toModel() ?? AdminCounts(users: 0, jobs: 0, applications: 0, pendingVerifications: 0),
+            pending: (pending ?? []).map { $0.toModel() }
         )
     }
 }

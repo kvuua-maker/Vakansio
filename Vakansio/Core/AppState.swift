@@ -17,6 +17,10 @@ final class AppState: ObservableObject {
     @Published var isDeletingAccount: Bool = false
     @Published var userName: String = ""
     @Published var userEmail: String = ""
+    @Published var isAdmin: Bool = false
+    @Published var companyEdrpou: String = ""
+    @Published var companyVerified: Bool = false
+    @Published var companyVerificationStatus: String = ""
 
     // Server content
     @Published var jobs: [Vacancy] = []
@@ -71,6 +75,7 @@ final class AppState: ObservableObject {
         static let skills = "vk.resume.skills"
         static let city = "vk.resume.city"
         static let hasPDF = "vk.resume.hasPDF"
+        static let generatedText = "vk.resume.generatedText"
     }
 
     init() {
@@ -109,6 +114,7 @@ final class AppState: ObservableObject {
         if let value = defaults.string(forKey: Keys.about), !value.isEmpty { resume.about = value }
         if let value = defaults.string(forKey: Keys.skills), !value.isEmpty { resume.skills = value }
         if let value = defaults.string(forKey: Keys.city), !value.isEmpty { resume.city = value }
+        resume.generatedText = defaults.string(forKey: Keys.generatedText) ?? ""
     }
 
     // MARK: - Lifecycle
@@ -226,12 +232,17 @@ final class AppState: ObservableObject {
 
         // Requirement: apply with the resume saved on the server, not a new form.
         if let profile = try? await api.fetchProfile(userId: userId) {
-            let serverResume = [profile.headline, profile.about, profile.skills, profile.city]
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-            if !serverResume.isEmpty {
-                resumeText = serverResume
+            let fullResume = profile.resumeText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !fullResume.isEmpty {
+                resumeText = fullResume
+            } else {
+                let serverResume = [profile.headline, profile.about, profile.skills, profile.city]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                if !serverResume.isEmpty {
+                    resumeText = serverResume
+                }
             }
             if let serverPhoto = profile.photoBase64, !serverPhoto.isEmpty {
                 photoBase64 = serverPhoto
@@ -276,6 +287,34 @@ final class AppState: ObservableObject {
 
     func sendChatMessage(applicationId: String, text: String) async throws -> ChatMessage {
         try await api.sendMessage(applicationId: applicationId, userId: userId, text: text)
+    }
+
+    func verifyCompany(edrpou: String) async -> CompanyVerificationResult? {
+        let cleaned = edrpou.filter { $0.isNumber }
+        guard cleaned.count == 8 || cleaned.count == 10 else {
+            showToast("ЄДРПОУ має містити 8 або 10 цифр", icon: "exclamationmark.triangle.fill", style: .error)
+            return nil
+        }
+
+        do {
+            let result = try await api.verifyCompany(userId: userId, edrpou: cleaned)
+            companyVerificationStatus = result.status
+            companyVerified = result.verified
+            if !result.edrpou.isEmpty { companyEdrpou = result.edrpou }
+
+            if result.verified {
+                await loadEmployerJobs()
+                await loadRecommendedJobs()
+            }
+            return result
+        } catch {
+            showToast(error.localizedDescription, icon: "exclamationmark.triangle.fill", style: .error)
+            return nil
+        }
+    }
+
+    func fetchAdminOverview() async throws -> AdminOverview {
+        try await api.fetchAdminOverview(userId: userId)
     }
 
     // MARK: - Saved
@@ -467,7 +506,8 @@ final class AppState: ObservableObject {
             headline: resume.headline,
             about: resume.about,
             skills: resume.skills,
-            city: resume.city
+            city: resume.city,
+            resumeText: resume.generatedText
         )
 
         do {
@@ -483,11 +523,27 @@ final class AppState: ObservableObject {
         }
     }
 
-    func updateResume(headline: String, about: String, skills: String, city: String) async -> Bool {
+    func updateResume(
+        headline: String,
+        about: String,
+        skills: String,
+        city: String,
+        resumeText: String? = nil
+    ) async -> Bool {
         resume.headline = headline
         resume.about = about
         resume.skills = skills
         resume.city = city
+
+        if let resumeText {
+            resume.generatedText = String(resumeText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12000))
+        } else {
+            resume.generatedText = [headline, about, skills, city]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
+
         cacheProfile()
 
         let saved = await saveProfile()
@@ -509,6 +565,7 @@ final class AppState: ObservableObject {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleaned.isEmpty {
             resume.about = String(cleaned.prefix(4000))
+            resume.generatedText = String(cleaned.prefix(12000))
         }
         resume.hasPDF = true
         cacheProfile()
@@ -530,6 +587,10 @@ final class AppState: ObservableObject {
         isSignedIn = false
         userName = ""
         userEmail = ""
+        isAdmin = false
+        companyEdrpou = ""
+        companyVerified = false
+        companyVerificationStatus = ""
         applications = []
         employerJobs = []
         employerApplications = []
@@ -542,7 +603,7 @@ final class AppState: ObservableObject {
         for key in [
             Keys.onboarded, Keys.role, Keys.signedIn, Keys.userName, Keys.userEmail,
             Keys.tier, Keys.saved, Keys.photo, Keys.headline, Keys.about, Keys.skills,
-            Keys.city, Keys.hasPDF
+            Keys.city, Keys.hasPDF, Keys.generatedText
         ] {
             defaults.removeObject(forKey: key)
         }
@@ -560,6 +621,12 @@ final class AppState: ObservableObject {
         if !profile.about.isEmpty { resume.about = profile.about }
         if !profile.skills.isEmpty { resume.skills = profile.skills }
         if !profile.city.isEmpty { resume.city = profile.city }
+
+        resume.generatedText = profile.resumeText
+        isAdmin = profile.isAdmin
+        companyEdrpou = profile.companyEdrpou
+        companyVerified = profile.companyVerified
+        companyVerificationStatus = profile.verificationStatus
     }
 
     private func cacheProfile() {
@@ -569,6 +636,7 @@ final class AppState: ObservableObject {
         defaults.set(resume.skills, forKey: Keys.skills)
         defaults.set(resume.city, forKey: Keys.city)
         defaults.set(resume.hasPDF, forKey: Keys.hasPDF)
+        defaults.set(resume.generatedText, forKey: Keys.generatedText)
         defaults.set(userName, forKey: Keys.userName)
         defaults.set(userEmail, forKey: Keys.userEmail)
     }

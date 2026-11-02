@@ -13,7 +13,7 @@ struct CreateVacancyView: View {
     @State private var city = "Київ"
     @State private var salaryMin = ""
     @State private var salaryMax = ""
-    @State private var category = "IT"
+    @State private var category = "IT та телеком"
     @State private var description = ""
     @State private var requirements = ""
     @State private var showSuccess = false
@@ -290,7 +290,7 @@ struct CreateVacancyView: View {
         city = "Київ"
         salaryMin = ""
         salaryMax = ""
-        category = "IT"
+        category = "IT та телеком"
         description = ""
         requirements = ""
         createdJob = nil
