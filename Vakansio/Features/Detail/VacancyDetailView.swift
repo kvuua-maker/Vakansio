@@ -71,23 +71,7 @@ struct VacancyDetailView: View {
                     .accessibilityLabel("Поділитися")
 
                     if !isOwnVacancy {
-                        Menu {
-                            Button {
-                                showReportDialog = true
-                            } label: {
-                                Label("Поскаржитися", systemImage: "flag")
-                            }
-
-                            Button(role: .destructive) {
-                                showBlockDialog = true
-                            } label: {
-                                Label("Заблокувати роботодавця", systemImage: "hand.raised")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .foregroundStyle(VK.textPrimary)
-                        }
-                        .accessibilityLabel("Більше")
+                        actionsMenu
                     }
                 }
             }
@@ -105,7 +89,7 @@ struct VacancyDetailView: View {
                 ChatView(
                     conversationId: conversation.id,
                     title: conversation.jobTitle,
-                    counterpartyName: conversation.counterpartyName,
+                    counterpartyName: conversation.counterpartName,
                     counterpartId: conversation.counterpartId
                 )
                 .toolbar {
@@ -139,6 +123,21 @@ struct VacancyDetailView: View {
         } message: {
             Text("Вакансії цього роботодавця та чат з ним зникнуть із вашого акаунта.")
         }
+    }
+
+    private var actionsMenu: some View {
+        Menu {
+            Button("Поскаржитися", systemImage: "flag") {
+                showReportDialog = true
+            }
+            Button("Заблокувати роботодавця", systemImage: "hand.raised", role: .destructive) {
+                showBlockDialog = true
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(VK.textPrimary)
+        }
+        .accessibilityLabel("Більше")
     }
 
     // MARK: Hero

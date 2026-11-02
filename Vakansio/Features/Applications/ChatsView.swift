@@ -32,7 +32,7 @@ struct ChatsView: View {
                                     ChatView(
                                         conversationId: conversation.id,
                                         title: conversation.jobTitle,
-                                        counterpartyName: conversation.counterpartyName,
+                                        counterpartyName: conversation.counterpartName,
                                         counterpartId: conversation.counterpartId
                                     )
                                 } label: {
