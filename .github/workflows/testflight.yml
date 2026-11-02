@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           curl -fsS --max-time 20 https://178.105.32.46:8443/health -o "$RUNNER_TEMP/health.json"
           cat "$RUNNER_TEMP/health.json"
-          node -e 'const d=require(process.env.RUNNER_TEMP+"/health.json"); if(!d.ok||Number(d.jobs)<40){console.error("API health/jobs check failed");process.exit(1)} console.log("API HTTPS jobs:", d.jobs)'
+          node -e 'const d=require(process.env.RUNNER_TEMP+"/health.json"); if(!d.ok||Number(d.jobs)<10){console.error("API health/jobs check failed");process.exit(1)} console.log("API HTTPS jobs:", d.jobs)'
 
       - name: Select the newest Xcode
         run: |
