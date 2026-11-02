@@ -106,18 +106,29 @@ async function ensureAppAvailability(appId) {
 
   const territories = await listAll('/territories?limit=200');
   if (!territories.length) throw new Error('Apple territory catalog is empty');
-  const included = territories.map((territory) => ({
+  const included = territories.map((territory) => {
+    const localId = `\${local-${String(territory.id).toLowerCase()}}`;
+    return {
+      id: localId,
+      type: 'territoryAvailabilities',
+      attributes: { available: true },
+      relationships: {
+        territory: { data: { type: 'territories', id: territory.id } },
+      },
+    };
+  });
+  const relationshipData = included.map((resource) => ({
     type: 'territoryAvailabilities',
-    attributes: { available: true },
-    relationships: {
-      territory: { data: { type: 'territories', id: territory.id } },
-    },
+    id: resource.id,
   }));
   const created = await request('POST', 'https://api.appstoreconnect.apple.com/v2/appAvailabilities', {
     data: {
       type: 'appAvailabilities',
       attributes: { availableInNewTerritories: true },
-      relationships: { app: { data: { type: 'apps', id: appId } } },
+      relationships: {
+        app: { data: { type: 'apps', id: appId } },
+        territoryAvailabilities: { data: relationshipData },
+      },
     },
     included,
   });
