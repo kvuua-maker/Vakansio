@@ -7,7 +7,6 @@ struct VacancyDetailView: View {
     let vacancy: Vacancy
 
     @State private var showApplySheet = false
-    @State private var copiedContact = false
 
     private var isSaved: Bool {
         app.isSaved(vacancy)

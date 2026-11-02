@@ -43,8 +43,8 @@ struct PaywallView: View {
             .navigationTitle(isModal ? "" : "Тарифи")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if isModal {
-                    ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .cancellationAction) {
+                    if isModal {
                         Button {
                             dismiss()
                         } label: {
