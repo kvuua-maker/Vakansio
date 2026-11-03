@@ -8,6 +8,7 @@ struct EmployerDashboardView: View {
     @State private var showPaywall = false
     @State private var jobToDelete: Vacancy?
     @State private var showDeleteJob = false
+    @State private var selectedVacancy: Vacancy?
     @State private var edrpouDraft = ""
     @State private var isVerifyingCompany = false
     @State private var verificationMessage: String?
@@ -56,6 +57,17 @@ struct EmployerDashboardView: View {
         }
         .sheet(isPresented: $showPaywall) {
             PaywallView(isModal: true)
+        }
+        .sheet(item: $selectedVacancy) { vacancy in
+            NavigationStack {
+                VacancyDetailView(vacancy: vacancy)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Закрити") { selectedVacancy = nil }
+                                .foregroundStyle(VK.textSecondary)
+                        }
+                    }
+            }
         }
         .confirmationDialog(
             "Видалити вакансію?",
@@ -142,7 +154,7 @@ struct EmployerDashboardView: View {
             }
 
             LimitProgressView(
-                used: app.employerJobs.count,
+                used: app.billableEmployerJobsCount,
                 limit: app.tier.vacancyLimit,
                 tint: Color.white,
                 track: Color.white.opacity(0.22),
@@ -150,7 +162,7 @@ struct EmployerDashboardView: View {
             )
 
             HStack(spacing: 8) {
-                Text("Використано \(app.employerJobs.count) з \(app.tier.vacancyLimit) вакансій")
+                Text("Використано \(app.billableEmployerJobsCount) з \(app.tier.vacancyLimit) вакансій")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.85))
 
@@ -389,6 +401,8 @@ struct EmployerDashboardView: View {
             }
             .buttonStyle(.plain)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { selectedVacancy = vacancy }
         .vkCard(padding: 14)
     }
 

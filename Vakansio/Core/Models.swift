@@ -204,6 +204,10 @@ struct Vacancy: Identifiable, Hashable {
         source != "internal" && !externalURL.isEmpty
     }
 
+    var isContentJob: Bool {
+        id.hasPrefix("content-job-")
+    }
+
     var sourceLabel: String {
         switch source.lowercased() {
         case "dou": return "DOU"

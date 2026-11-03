@@ -578,9 +578,14 @@ final class AppState: ObservableObject {
         defaults.set(newTier.rawValue, forKey: Keys.tier)
     }
 
+    var billableEmployerJobsCount: Int {
+        employerJobs.filter { !$0.isContentJob }.count
+    }
+
     private var occupiedVacancyCount: Int {
         employerJobs.filter {
-            $0.status == .active || $0.status == .pending || $0.status == .pendingManualReview
+            !$0.isContentJob &&
+            ($0.status == .active || $0.status == .pending || $0.status == .pendingManualReview)
         }.count
     }
 

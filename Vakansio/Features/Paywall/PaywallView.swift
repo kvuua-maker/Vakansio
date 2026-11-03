@@ -22,9 +22,6 @@ struct PaywallView: View {
         if selected == .start {
             return "Старт активний за замовчуванням"
         }
-        if StoreKitService.isEnabled && store.products.isEmpty {
-            return "Тарифи тимчасово недоступні"
-        }
         return "Оформити «\(selected.name)»"
     }
 

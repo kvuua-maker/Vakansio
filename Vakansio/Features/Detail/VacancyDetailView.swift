@@ -386,7 +386,14 @@ struct VacancyDetailView: View {
 
                 Spacer(minLength: 4)
 
-                if vacancy.isExternal {
+                if isOwnVacancy {
+                    Text("Ваша вакансія")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(VK.textSecondary)
+                        .padding(.horizontal, 14)
+                        .frame(height: 50)
+                        .background(VK.hairline.opacity(0.5), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else if vacancy.isExternal {
                     externalActionButton
                 } else if let application = appliedApplication {
                     appliedBadge(for: application)
