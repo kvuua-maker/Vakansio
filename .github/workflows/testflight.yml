@@ -24,7 +24,7 @@ jobs:
       APP_NAME: Vakansio
       APP_PROFILE: Vakansio_AppStore
       DIST_CERT_NAME: Vakansio Distribution
-      BUILD_NUMBER: 20
+      BUILD_NUMBER: 21
 
     steps:
       - uses: actions/checkout@v4
@@ -365,7 +365,7 @@ jobs:
           set -euo pipefail
           xcodegen generate
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ env.BUILD_NUMBER }}" Vakansio/Support/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" Vakansio/Support/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Vakansio/Support/Info.plist
 
@@ -382,7 +382,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CURRENT_PROJECT_VERSION=${{ env.BUILD_NUMBER }} \
-            MARKETING_VERSION=1.0.0 2>&1 | tee archive.log
+            MARKETING_VERSION=1.0 2>&1 | tee archive.log
 
       - name: Verify the archive
         run: |
@@ -443,6 +443,17 @@ jobs:
           unzip -l "$IPA" | head -5
           ls -l "$IPA"
           echo "IPA=$IPA" >> "$GITHUB_ENV"
+
+      - name: Validate App Store binary
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
+          test -n "$IPA"
+          xcrun altool --validate-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee validate.log
 
       - name: Upload to TestFlight
         env:
@@ -519,5 +530,6 @@ jobs:
           name: testflight-${{ env.BUILD_NUMBER }}
           path: |
             archive.log
+            validate.log
             upload.log
           if-no-files-found: ignore
