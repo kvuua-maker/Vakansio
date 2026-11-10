@@ -40,7 +40,14 @@ async function req(method, path, body) {
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!r.ok) {
-    const msg = (data.errors || []).map(e => `${e.code}: ${e.detail}`).join('\n') || text.slice(0, 900);
+    const msg = (data.errors || []).map(e => {
+      let line = `${e.code}: ${e.detail}`;
+      const associated = e.meta?.associatedErrors || {};
+      for (const [path, errs] of Object.entries(associated)) {
+        for (const a of (errs || [])) line += `\n  ${path}: ${a.code || ''} ${a.title || ''} ${a.detail || ''}`;
+      }
+      return line;
+    }).join('\n') || text.slice(0, 900);
     throw new Error(`HTTP ${r.status} ${method} ${absolute}\n${msg}`);
   }
   return data;
@@ -121,6 +128,22 @@ function fmt(e) { return e.message; }
       console.log('CANCELED_OLD_SUBMISSION', old.id);
     } catch (e) {
       console.log('CANCEL_OLD_FAILED', old.id, fmt(e));
+    }
+  }
+  // Remove stale app-version linkage from open/canceled submissions so the
+  // version can be attached to the fresh one.
+  for (const s of submissions.filter(s => ['UNRESOLVED_ISSUES', 'CANCELED', 'CANCELING'].includes(s.attributes?.state))) {
+    try {
+      const items = await req('GET', `/reviewSubmissions/${s.id}/items?include=appStoreVersion`);
+      for (const item of (items.data || [])) {
+        const linked = item.relationships?.appStoreVersion?.data?.id;
+        if (linked === version.id) {
+          await req('DELETE', `/reviewSubmissionItems/${item.id}`);
+          console.log('DELETED_STALE_VERSION_ITEM', s.id, item.id);
+        }
+      }
+    } catch (e) {
+      console.log('CLEANUP_STALE_ITEMS_FAILED', s.id, fmt(e));
     }
   }
   submissions = await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
