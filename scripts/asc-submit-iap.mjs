@@ -111,20 +111,16 @@ function fmt(e) { return e.message; }
 
   let submissions = await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
   console.log('EXISTING_SUBMISSIONS', JSON.stringify(submissions.map(s => ({ id: s.id, state: s.attributes?.state }))));
-  let submission = submissions.find(s => ['UNRESOLVED_ISSUES', 'READY_FOR_REVIEW'].includes(s.attributes?.state));
-  if (!submission) {
-    const created = await req('POST', '/v1/reviewSubmissions', {
-      data: {
-        type: 'reviewSubmissions',
-        attributes: { platform: 'IOS' },
-        relationships: { app: { data: { type: 'apps', id: app.id } } },
-      },
-    });
-    submission = created.data;
-    console.log('CREATED_SUBMISSION', submission.id);
-  } else {
-    console.log('USING_SUBMISSION', submission.id, submission.attributes?.state);
-  }
+  // The previous unsuccessful submission is closed for item changes. Create a fresh draft.
+  const created = await req('POST', '/reviewSubmissions', {
+    data: {
+      type: 'reviewSubmissions',
+      attributes: { platform: 'IOS' },
+      relationships: { app: { data: { type: 'apps', id: app.id } } },
+    },
+  });
+  const submission = created.data;
+  console.log('CREATED_SUBMISSION', submission.id, submission.attributes?.state);
 
   const addItem = async (label, rel, type, id) => {
     try {
