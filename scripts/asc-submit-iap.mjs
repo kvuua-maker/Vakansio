@@ -111,16 +111,33 @@ function fmt(e) { return e.message; }
 
   let submissions = await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
   console.log('EXISTING_SUBMISSIONS', JSON.stringify(submissions.map(s => ({ id: s.id, state: s.attributes?.state }))));
-  // The previous unsuccessful submission is closed for item changes. Create a fresh draft.
-  const created = await req('POST', '/reviewSubmissions', {
-    data: {
-      type: 'reviewSubmissions',
-      attributes: { platform: 'IOS' },
-      relationships: { app: { data: { type: 'apps', id: app.id } } },
-    },
-  });
-  const submission = created.data;
-  console.log('CREATED_SUBMISSION', submission.id, submission.attributes?.state);
+  // A rejected submission cannot be edited. Cancel it so the app version can be
+  // added to a fresh submission with the subscriptions.
+  for (const old of submissions.filter(s => s.attributes?.state === 'UNRESOLVED_ISSUES')) {
+    try {
+      await req('PATCH', `/reviewSubmissions/${old.id}`, {
+        data: { type: 'reviewSubmissions', id: old.id, attributes: { canceled: true } },
+      });
+      console.log('CANCELED_OLD_SUBMISSION', old.id);
+    } catch (e) {
+      console.log('CANCEL_OLD_FAILED', old.id, fmt(e));
+    }
+  }
+  submissions = await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
+  let submission = submissions.find(s => s.attributes?.state === 'READY_FOR_REVIEW');
+  if (!submission) {
+    const created = await req('POST', '/reviewSubmissions', {
+      data: {
+        type: 'reviewSubmissions',
+        attributes: { platform: 'IOS' },
+        relationships: { app: { data: { type: 'apps', id: app.id } } },
+      },
+    });
+    submission = created.data;
+    console.log('CREATED_SUBMISSION', submission.id, submission.attributes?.state);
+  } else {
+    console.log('USING_READY_SUBMISSION', submission.id);
+  }
 
   const addItem = async (label, rel, type, id) => {
     try {
@@ -134,12 +151,15 @@ function fmt(e) { return e.message; }
         },
       });
       console.log('ITEM_ADDED', label, id);
+      return true;
     } catch (e) {
       console.log('ITEM_SKIPPED', label, id, fmt(e));
+      return false;
     }
   };
 
-  await addItem('appVersion', 'appStoreVersion', 'appStoreVersions', version.id);
+  const appVersionAdded = await addItem('appVersion', 'appStoreVersion', 'appStoreVersions', version.id);
+  if (!appVersionAdded) throw new Error('Could not add app version to review submission');
   for (const sub of subscriptions) {
     await addItem(`subscription:${sub.productId}`, 'subscriptionVersion', 'subscriptionVersions', sub.versionId);
   }
