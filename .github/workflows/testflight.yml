@@ -24,7 +24,7 @@ jobs:
       APP_NAME: Vakansio
       APP_PROFILE: Vakansio_AppStore
       DIST_CERT_NAME: Vakansio Distribution
-      BUILD_NUMBER: 21
+      BUILD_NUMBER: 22
 
     steps:
       - uses: actions/checkout@v4
