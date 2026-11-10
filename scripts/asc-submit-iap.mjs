@@ -128,7 +128,7 @@ function fmt(e) { return e.message; }
 
   const addItem = async (label, rel, type, id) => {
     try {
-      await req('POST', '/v1/reviewSubmissionItems', {
+      await req('POST', '/reviewSubmissionItems', {
         data: {
           type: 'reviewSubmissionItems',
           relationships: {
