@@ -35,9 +35,28 @@ async function all(path){const out=[];let next=path;while(next){const d=await re
  // Withdraw every active draft/submitted submission that contains this app version.
  let submissions=await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
  console.log('SUBMISSIONS_BEFORE',JSON.stringify(submissions.map(s=>({id:s.id,state:s.attributes?.state}))));
- for(const s of submissions.filter(s=>['READY_FOR_REVIEW','WAITING_FOR_REVIEW','IN_REVIEW','UNRESOLVED_ISSUES'].includes(s.attributes?.state))){
-   try{const items=await req('GET',`/reviewSubmissions/${s.id}/items?include=appStoreVersion`);for(const item of (items.data||[])){if(item.relationships?.appStoreVersion?.data?.id===version.id&&s.attributes?.state!=='IN_REVIEW'){try{await req('DELETE',`/reviewSubmissionItems/${item.id}`);console.log('DELETED_ITEM',s.id,item.id);}catch(e){console.log('DELETE_ITEM_SKIP',s.id,e.message.split('\n')[0]);}}}catch(e){console.log('ITEMS_READ_FAIL',s.id,e.message.split('\n')[0]);}
-   try{await req('PATCH',`/reviewSubmissions/${s.id}`,{data:{type:'reviewSubmissions',id:s.id,attributes:{canceled:true}}});console.log('CANCELED',s.id);}catch(e){console.log('CANCEL_FAILED',s.id,e.message.split('\n')[0]);}
+ for (const s of submissions.filter(s => ['READY_FOR_REVIEW','WAITING_FOR_REVIEW','IN_REVIEW','UNRESOLVED_ISSUES'].includes(s.attributes?.state))) {
+   try {
+     const items = await req('GET', `/reviewSubmissions/${s.id}/items?include=appStoreVersion`);
+     for (const item of (items.data || [])) {
+       if (item.relationships?.appStoreVersion?.data?.id === version.id && s.attributes?.state !== 'IN_REVIEW') {
+         try {
+           await req('DELETE', `/reviewSubmissionItems/${item.id}`);
+           console.log('DELETED_ITEM', s.id, item.id);
+         } catch (e) {
+           console.log('DELETE_ITEM_SKIP', s.id, e.message.split('\n')[0]);
+         }
+       }
+     }
+   } catch (e) {
+     console.log('ITEMS_READ_FAIL', s.id, e.message.split('\n')[0]);
+   }
+   try {
+     await req('PATCH', `/reviewSubmissions/${s.id}`, { data: { type: 'reviewSubmissions', id: s.id, attributes: { canceled: true } } });
+     console.log('CANCELED', s.id);
+   } catch (e) {
+     console.log('CANCEL_FAILED', s.id, e.message.split('\n')[0]);
+   }
  }
  await new Promise(r=>setTimeout(r,3000));
  submissions=await all(`/apps/${app.id}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=200`);
