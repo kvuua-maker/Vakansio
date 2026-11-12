@@ -1,0 +1,75 @@
+{
+  "identifier" : "com.kvuua.vakansio.storekit",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_applicationInternalID" : "6829793898",
+    "_developerTeamID" : "9V5XXDXF3N",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "uk_UA",
+    "_storefront" : "UKR",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "22539024",
+      "localizations" : [
+        {
+          "description" : "10 активних вакансій, розширена аналітика",
+          "displayName" : "Тариф Профі",
+          "locale" : "uk"
+        }
+      ],
+      "name" : "Vakansio Plans",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "12.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "vakansio-pro-monthly",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "10 активних вакансій, розширена аналітика",
+              "displayName" : "Тариф Профі",
+              "locale" : "uk"
+            }
+          ],
+          "productID" : "com.kvuua.vakansio.pro",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Vakansio Pro",
+          "subscriptionGroupID" : "22539024",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "29.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "vakansio-business-monthly",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Безлімітна кількість вакансій, пріоритетна підтримка",
+              "displayName" : "Тариф Бізнес",
+              "locale" : "uk"
+            }
+          ],
+          "productID" : "com.kvuua.vakansio.business",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Vakansio Business",
+          "subscriptionGroupID" : "22539024",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

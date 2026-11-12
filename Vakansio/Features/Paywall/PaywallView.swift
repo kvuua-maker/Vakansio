@@ -14,6 +14,7 @@ struct PaywallView: View {
     @State private var isRestoring = false
     @State private var showSuccess = false
     @State private var purchaseError: String?
+    @State private var showPurchaseError = false
 
     private var buttonTitle: String {
         if app.tier == selected {
@@ -72,6 +73,16 @@ struct PaywallView: View {
                 }
             } message: {
                 Text("Ваш тариф «\(app.tier.name)» активний. Тепер доступно \(app.tier.vacancyLimit) активних вакансій.")
+            }
+            .alert("Покупка недоступна", isPresented: $showPurchaseError) {
+                Button("OK", role: .cancel) { }
+                if store.products.isEmpty {
+                    Button("Спробувати ще") {
+                        Task { await store.loadProducts() }
+                    }
+                }
+            } message: {
+                Text(purchaseError ?? "Не вдалося завантажити тарифи з App Store. Перевірте інтернет і спробуйте ще раз.")
             }
             .task {
                 guard StoreKitService.isEnabled else { return }
@@ -291,11 +302,34 @@ struct PaywallView: View {
         VStack(spacing: 7) {
             Divider().overlay(VK.hairline)
 
+            if store.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(VK.brand)
+                        .scaleEffect(0.8)
+                    Text("Завантажуємо тарифи…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(VK.textSecondary)
+                }
+            } else if store.products.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(VK.warning)
+                    Button("Завантажити тарифи ще раз") {
+                        Task { await store.loadProducts() }
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(VK.brand)
+                    .buttonStyle(.plain)
+                }
+            }
+
             PrimaryButton(
                 title: buttonTitle,
                 icon: selected == .start ? "leaf.fill" : "crown.fill",
                 isLoading: isPurchasing,
-                isEnabled: app.tier != selected && selected != .start && selectedProduct != nil
+                isEnabled: app.tier != selected && selected != .start
             ) {
                 purchase()
             }
@@ -320,7 +354,10 @@ struct PaywallView: View {
     private func purchase() {
         guard app.tier != selected, selected != .start, !isPurchasing else { return }
         guard let product = selectedProduct else {
-            purchaseError = "Цей тариф ще не налаштований в App Store."
+            purchaseError = store.products.isEmpty
+                ? "Тарифи не завантажилися з App Store. Перевірте інтернет і натисніть «Спробувати ще»."
+                : "Цей тариф ще не налаштований в App Store. Спробуйте пізніше."
+            showPurchaseError = true
             return
         }
 
@@ -333,6 +370,7 @@ struct PaywallView: View {
 
             guard let jws = store.latestJWS else {
                 purchaseError = store.errorMessage ?? "Не вдалося отримати транзакцію App Store."
+                showPurchaseError = true
                 return
             }
 
@@ -341,6 +379,7 @@ struct PaywallView: View {
                 showSuccess = true
             } else {
                 purchaseError = app.lastErrorMessage ?? "Сервер не підтвердив підписку."
+                showPurchaseError = true
             }
         }
     }
@@ -356,6 +395,7 @@ struct PaywallView: View {
 
             guard let jws = store.latestJWS else {
                 purchaseError = "Активних підписок не знайдено."
+                showPurchaseError = true
                 return
             }
 
@@ -363,6 +403,7 @@ struct PaywallView: View {
                 showSuccess = true
             } else {
                 purchaseError = app.lastErrorMessage ?? "Не вдалося відновити підписку."
+                showPurchaseError = true
             }
         }
     }

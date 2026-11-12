@@ -58,6 +58,7 @@ final class StoreKitService: ObservableObject {
 
     func loadProducts() async {
         isLoading = true
+        errorMessage = nil
         defer { isLoading = false }
 
         do {
