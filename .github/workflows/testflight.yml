@@ -24,7 +24,7 @@ jobs:
       APP_NAME: Vakansio
       APP_PROFILE: Vakansio_AppStore
       DIST_CERT_NAME: Vakansio Distribution
-      BUILD_NUMBER: 23
+      BUILD_NUMBER: 24
 
     steps:
       - uses: actions/checkout@v4
@@ -365,7 +365,7 @@ jobs:
           set -euo pipefail
           xcodegen generate
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ env.BUILD_NUMBER }}" Vakansio/Support/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0" Vakansio/Support/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Vakansio/Support/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Vakansio/Support/Info.plist
 
@@ -382,7 +382,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CURRENT_PROJECT_VERSION=${{ env.BUILD_NUMBER }} \
-            MARKETING_VERSION=1.0 2>&1 | tee archive.log
+            MARKETING_VERSION=1.0.0 2>&1 | tee archive.log
 
       - name: Verify the archive
         run: |
